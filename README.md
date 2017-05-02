@@ -24,7 +24,7 @@ int main(){
 	defer c.Disconnect()
 
 	agent, err = c.Register(qbridge)
-	err = c.Unregister(qbridge)
+	defer c.Unregister(qbridge)
 
 	agent.OnGet(egress, func(oid agx.OID) agx.PDU {
 		return agx.NewOctetString(getVlanState())
@@ -32,6 +32,9 @@ int main(){
 
 	agent.OnSet(egress, func(oid agx.OID, pdu agx.PDU) {
 		setVlanState(pdu.Bytes())
+		agent.Quit()
 	})
+	
+	agent.Wait()
 }
 ```

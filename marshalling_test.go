@@ -38,9 +38,39 @@ func TestMarshalRegisterMessage(t *testing.T) {
 	roundTripTest(t, a, b)
 }
 
+// +++ Integer VarBind +++
+func TestMarshalIntegerVarbind(t *testing.T) {
+	a := &agx.VarBind{}
+	a.Type = agx.IntegerT
+	name, err := agx.NewSubtree("1.3.5.1.2.1.17")
+	if err != nil {
+		t.Fatalf("error creating varbind %v", err)
+	}
+	a.Name = *name
+	a.Data = int32(47)
+
+	b := &agx.VarBind{}
+	roundTripTest(t, a, b)
+}
+
+// +++ OctetString VarBind +++
+func TestMarshalOctetStringVarbind(t *testing.T) {
+	a := &agx.VarBind{}
+	a.Type = agx.OctetStringT
+	name, err := agx.NewSubtree("1.3.5.1.2.1.17")
+	if err != nil {
+		t.Fatalf("error creating varbind %v", err)
+	}
+	a.Name = *name
+	a.Data = *agx.NewOctetString(string([]byte{0xcc, 0x33}))
+
+	b := &agx.VarBind{}
+	roundTripTest(t, a, b)
+}
+
 //helpers =====================================================================
 
-func roundTripTest(t *testing.T, a, b agx.AgentXMessage) {
+func roundTripTest(t *testing.T, a, b agx.Message) {
 	buf, err := a.MarshalBinary()
 	if err != nil {
 		t.Fatalf("error marshalling message %v ", err)

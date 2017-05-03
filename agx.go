@@ -9,20 +9,24 @@ package agx
 import (
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net"
-	"time"
 )
-
-var agents map[string]*Agent
 
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  * Connections
  *----------------------------------------------------------------------------*/
 type Connection struct {
-	conn      net.Conn
-	sessionId int32
+	//private members
+	conn          net.Conn
+	sessionId     int32
+	registrations []string
+	closed        bool
+	getHandlers   map[string]GetHandler
+	setHandlers   map[string]SetHandler
+
+	//public members
+	Closed chan bool
 }
 
 const (
@@ -44,7 +48,9 @@ func Connect(id, descr *string) (*Connection, error) {
 		return nil, fmt.Errorf("error connecting to agentx: %v", err)
 	}
 	c.conn = conn
-	c.conn.SetDeadline(time.Now().Add(ConnectionTimeout * time.Second))
+	c.Closed = make(chan bool)
+	c.getHandlers = make(map[string]GetHandler)
+	c.setHandlers = make(map[string]SetHandler)
 
 	//try to open a new AgentX session with the master
 	m, err := NewOpenMessage(id, descr)
@@ -54,13 +60,17 @@ func Connect(id, descr *string) (*Connection, error) {
 	hdr, buf, err := sendrecvMsg(m, c)
 
 	//grab the response payload, extract and save the sessionId
-	p := &AgentXResponsePayload{}
+	p := &ResponsePayload{}
 	_, err = p.UnmarshalBinary(buf[HeaderSize:])
 	if err != nil {
 		log.Printf("error reading open response playload: %v", err)
 		return nil, err
 	}
 	c.sessionId = hdr.SessionId
+
+	log.Printf("agent entering read loop")
+
+	go rootMessageHandler(c)
 
 	return c, nil
 }
@@ -74,101 +84,67 @@ func (c *Connection) Disconnect() {
 
 	//send the close PDU to the master
 	msg := NewCloseMessage(CloseReasonShutdown, c.sessionId)
-	buf, err := msg.MarshalBinary()
+	err := sendMsg(msg, c)
 	if err != nil {
-		log.Printf("error marshalling close message: %v", err)
-		c.conn.Close()
-		return
+		if err == io.EOF {
+			//ok connection is aleady closed
+		} else {
+			log.Printf("error closing connection %v", err)
+		}
 	}
-	_, buf, err = sendrecvMsg(msg, c)
-	if err != nil {
-		log.Printf("error closing connection")
-	}
-
-	//grab the response payload and check for errors
-	p := &AgentXResponsePayload{}
-	_, err = p.UnmarshalBinary(buf[HeaderSize:])
-	if err != nil {
-		log.Printf("error reading close response playload: %v", err)
-		c.conn.Close()
-		return
-	}
-	if p.Error != 0 {
-		log.Printf("Master agent reporeted error on close %d", p.Error)
-	}
-
-	//close the unix domain socket
-	c.conn.Close()
 }
 
-func (c *Connection) Register(oid string) (*Agent, error) {
+func (c *Connection) Register(oid string) error {
 	return c.doRegister(oid, false)
 }
 
-func (c *Connection) Unregister(oid string) (*Agent, error) {
+func (c *Connection) Unregister(oid string) error {
 	return c.doRegister(oid, true)
 }
 
-func (c *Connection) doRegister(oid string, unregister bool) (*Agent, error) {
-
-	a := &Agent{}
-	if agents == nil {
-		agents = make(map[string]*Agent)
-	}
-	agents[oid] = a
+func (c *Connection) doRegister(oid string, unregister bool) error {
 
 	var m *RegisterMessage
 	var err error
+	var context = ""
 	if unregister {
-		m, err = NewUnregisterMessage(oid, nil, nil)
+		m, err = NewUnregisterMessage(oid, &context, nil)
 	} else {
-		m, err = NewRegisterMessage(oid, nil, nil)
+		m, err = NewRegisterMessage(oid, &context, nil)
 	}
+	m.Header.PacketId = int32(len(c.registrations))
+	c.registrations = append(c.registrations, oid)
 
 	m.Header.SessionId = c.sessionId
 	if err != nil {
-		return nil, fmt.Errorf("failed creating registration message %v", err)
+		return fmt.Errorf("failed creating registration message %v", err)
 	}
 
-	_, buf, err := sendrecvMsg(m, c)
+	sendMsg(m, c)
 
-	//grab the response payload and check for errors
-	p := &AgentXResponsePayload{}
-	_, err = p.UnmarshalBinary(buf[HeaderSize:])
-	if err != nil {
-		c.conn.Close()
-		return nil, fmt.Errorf("error reading close response playload: %v", err)
-	}
-	if p.Error != 0 {
-		log.Printf("Master agent reporeted error on close %d", p.Error)
-	}
-
-	if unregister {
-		log.Printf("unregistered %s with master", oid)
-	} else {
-		log.Printf("registered %s with master", oid)
-	}
-
-	return a, nil
+	return nil
 }
 
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  * Agents
  *----------------------------------------------------------------------------*/
-type Agent struct {
+type GetHandler func(oid Subtree) VarBind
+type SetHandler func(oid Subtree, pdu VarBind) VarBind
+
+func (c *Connection) OnGet(oid string, f GetHandler) {
+	c.getHandlers[oid] = f
 }
 
-func (a *Agent) OnGet(oid string, f func(oid OID) PDU) {
-	panic("not implemented")
-}
-
-func (a *Agent) OnSet(oid string, f func(oid OID, pdu PDU)) {
-	panic("not implemented")
+func (c *Connection) OnSet(oid string, f SetHandler) {
+	c.setHandlers[oid] = f
 }
 
 // helper functions ===========================================================
 
-func sendMsg(m AgentXMessage, c *Connection) error {
+func sendMsg(m Message, c *Connection) error {
+	if c.closed {
+		return io.EOF
+	}
 	buf, err := m.MarshalBinary()
 	if err != nil {
 		return fmt.Errorf("error marshalling message: %v", err)
@@ -181,14 +157,17 @@ func sendMsg(m AgentXMessage, c *Connection) error {
 	return nil
 }
 
-func recvMsg(c *Connection) (*AgentXHeader, []byte, error) {
+func recvMsg(c *Connection) (*Header, []byte, error) {
 	buf := make([]byte, 1024)
 	n, err := c.conn.Read(buf)
 	if err != nil {
+		if err == io.EOF {
+			return nil, nil, err
+		}
 		return nil, nil, fmt.Errorf("error getting message response: %v", err)
 	}
 
-	hdr := &AgentXHeader{}
+	hdr := &Header{}
 	_, err = hdr.UnmarshalBinary(buf[:n])
 	if err != nil {
 		log.Printf("failure reading response header: %v", err)
@@ -197,7 +176,7 @@ func recvMsg(c *Connection) (*AgentXHeader, []byte, error) {
 	return hdr, buf, nil
 }
 
-func sendrecvMsg(m AgentXMessage, c *Connection) (*AgentXHeader, []byte, error) {
+func sendrecvMsg(m Message, c *Connection) (*Header, []byte, error) {
 	err := sendMsg(m, c)
 	if err != nil {
 		return nil, nil, err
@@ -206,17 +185,115 @@ func sendrecvMsg(m AgentXMessage, c *Connection) (*AgentXHeader, []byte, error) 
 	return recvMsg(c)
 }
 
-func rootMessageHandler(r io.Reader) {
-	buf, err := ioutil.ReadAll(r)
+func rootMessageHandler(c *Connection) {
+	log.Printf("[rootMH] waiting for messages")
+
+	for {
+		hdr, buf, err := recvMsg(c)
+		if err != nil {
+			if err == io.EOF {
+				log.Printf("[rootMH] master agent has closed connection")
+				c.Closed <- true
+				c.closed = true
+				return
+			}
+			log.Printf("[rootMH] failure reading incommig message: %v", err)
+			continue
+		}
+
+		switch hdr.Type {
+		case ResponsePDU:
+			switch hdr.TransactionId {
+			case CloseTransactionId:
+				handleCloseResponse(c, hdr, buf)
+			case RegisterTransactionId:
+				handleRegisterResponse(c, hdr, buf)
+			case UnregisterTransactionId:
+				handleUnregisterResponse(c, hdr, buf)
+			}
+		case GetPDU:
+			handleGet(c, hdr, buf)
+		default:
+			log.Printf("[roogMH] unknown message")
+		}
+	}
+}
+
+func handleCloseResponse(c *Connection, h *Header, buf []byte) {
+	log.Printf("[rootMH] recieved close response from server, ... exiting\n")
+	//grab the response payload and check for errors
+	p := &ResponsePayload{}
+	_, err := p.UnmarshalBinary(buf[HeaderSize:])
 	if err != nil {
-		log.Printf("[rootMH] failure reading incommig message: %v", err)
+		log.Printf("error reading close response playload: %v", err)
+		c.conn.Close()
+		return
+	}
+	if p.Error != 0 {
+		log.Printf("Master agent reporeted error on close %d", p.Error)
 	}
 
-	hdr := &AgentXHeader{}
-	_, err = hdr.UnmarshalBinary(buf)
+	//close the unix domain socket
+	c.conn.Close()
+	c.Closed <- true
+	c.closed = true
+}
+
+func handleRegisterResponse(c *Connection, h *Header, buf []byte) {
+	p := &ResponsePayload{}
+	_, err := p.UnmarshalBinary(buf[HeaderSize:])
 	if err != nil {
-		log.Printf("[rootMH] failure reading agentx header: %v", err)
+		log.Printf("error reading response playload: %v", err)
+		return
 	}
 
-	log.Printf("[roogMH] message:\n %#v", hdr)
+	if p.Error == 0 {
+		log.Printf(
+			"[rootMH] received registration confrimation for %s\n",
+			c.registrations[h.PacketId])
+	} else {
+		log.Printf(
+			"[rootMH] received registration failure for %s\n",
+			c.registrations[h.PacketId])
+	}
+}
+
+func handleUnregisterResponse(c *Connection, h *Header, buf []byte) {
+	log.Printf("[rootMH] received unregistration confrimation for %s\n",
+		c.registrations[h.PacketId])
+}
+
+func handleGet(c *Connection, h *Header, buf []byte) {
+	g := &GetMessage{}
+	_, err := g.UnmarshalBinary(buf)
+	if err != nil {
+		log.Printf("[rootMH] error unmarshalling GetPDU %v\n", err)
+	}
+
+	var r Response
+	r.Header.Version = 1
+	r.Header.Type = ResponsePDU
+	r.Header.Flags = h.Flags & NetworkByteOrder
+	r.Header.SessionId = c.sessionId
+	r.Header.TransactionId = h.TransactionId
+	r.Header.PacketId = h.PacketId
+	r.Header.PayloadLength = 8
+
+	for _, x := range g.SearchRangeList {
+		oid := x.String()
+		handler, ok := c.getHandlers[oid]
+		if !ok {
+			log.Printf("[get] no handler for %s", oid)
+			vb := NoSuchObjectVarBind(x)
+			r.VarBindList = append(r.VarBindList, vb)
+			r.Header.PayloadLength += int32(vb.WireSize())
+		} else {
+			log.Printf("[get] passing along %s", oid)
+			vb := handler(x)
+			r.VarBindList = append(r.VarBindList, vb)
+			r.Header.PayloadLength += int32(vb.WireSize())
+		}
+	}
+
+	sendMsg(&r, c)
 }

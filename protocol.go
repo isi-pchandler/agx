@@ -17,16 +17,6 @@ import (
 )
 
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
- * OIDs
- *----------------------------------------------------------------------------*/
-type OID struct {
-}
-
-func (o OID) String() string {
-	panic("not implemented")
-}
-
-/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  * PDUs
  *----------------------------------------------------------------------------*/
 type PDU struct {
@@ -35,24 +25,20 @@ type PDU struct {
 }
 
 const (
-	Integer          = 2
-	OctetString      = 4
-	Null             = 5
-	ObjectIdentifier = 6
-	IpAddress        = 64
-	Counter32        = 65
-	Gauge32          = 66
-	TimeTicks        = 67
-	Opaque           = 68
-	Counter64        = 70
-	NoSuchObject     = 128
-	NoSuchInstance   = 129
-	EndOfMibView     = 130
+	IntegerT          = 2
+	OctetStringT      = 4
+	NullT             = 5
+	ObjectIdentifierT = 6
+	IpAddressT        = 64
+	Counter32T        = 65
+	Gauge32T          = 66
+	TimeTicksT        = 67
+	OpaqueT           = 68
+	Counter64T        = 70
+	NoSuchObjectT     = 128
+	NoSuchInstanceT   = 129
+	EndOfMibViewT     = 130
 )
-
-func NewOctetString(value []byte) PDU {
-	panic("not implemented")
-}
 
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  * AgentX Protocol
@@ -87,17 +73,25 @@ const (
 )
 
 const (
+	CloseTransactionId      = 86
+	RegisterTransactionId   = 47
+	UnregisterTransactionId = 74
+)
+
+const (
 	HeaderSize int = 20
 )
 
-type AgentXMessage interface {
+type Message interface {
 	MarshalBinary() ([]byte, error)
 	UnmarshalBinary([]byte) (int, error)
+	//TODO
+	//WireSize() int
 }
 
-// AgentXHeader ...............................................................
+// Header .....................................................................
 
-type AgentXHeader struct {
+type Header struct {
 	Version, Type, Flags, Reserved byte
 	SessionId                      int32
 	TransactionId                  int32
@@ -105,7 +99,7 @@ type AgentXHeader struct {
 	PayloadLength                  int32
 }
 
-func (h AgentXHeader) MarshalBinary() ([]byte, error) {
+func (h Header) MarshalBinary() ([]byte, error) {
 	buf := new(bytes.Buffer)
 	err := binary.Write(buf, binary.BigEndian, h)
 	if err != nil {
@@ -114,7 +108,7 @@ func (h AgentXHeader) MarshalBinary() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func (h *AgentXHeader) UnmarshalBinary(buf []byte) (int, error) {
+func (h *Header) UnmarshalBinary(buf []byte) (int, error) {
 	r := bytes.NewReader(buf)
 	err := binary.Read(r, binary.BigEndian, h)
 	if err != nil {
@@ -123,36 +117,241 @@ func (h *AgentXHeader) UnmarshalBinary(buf []byte) (int, error) {
 	return int(r.Size()) - r.Len(), nil
 }
 
-// AgentXResponse .............................................................
+// Response ...................................................................
 
-type AgentXResponse struct {
-	Header AgentXHeader
-	AgentXResponsePayload
+type Response struct {
+	Header Header
+	ResponsePayload
 }
 
-type AgentXResponsePayload struct {
-	SysUptime int32
-	Error     int16
-	Index     int16
-}
-
-func (p *AgentXResponsePayload) UnmarshalBinary(buf []byte) (int, error) {
-	r := bytes.NewReader(buf)
-	err := binary.Read(r, binary.BigEndian, p)
+func (m *Response) UnmarshalBinary(buf []byte) (int, error) {
+	i := 0
+	n, err := m.Header.UnmarshalBinary(buf)
 	if err != nil {
-		return int(r.Size()) - r.Len(), err
+		return i, err
 	}
-	return int(r.Size()) - r.Len(), nil
+	i += n
+
+	n, err = m.ResponsePayload.UnmarshalBinary(buf[i:])
+	if err != nil {
+		return i, err
+	}
+	i += n
+
+	return i, nil
 }
 
-// AgentXSubtree ..............................................................
+func (m Response) MarshalBinary() ([]byte, error) {
+	buf := new(bytes.Buffer)
+	if _, err := marshalToBuf(buf, &m.Header); err != nil {
+		return nil, err
+	}
+	if err := netMarshalMany(buf, m.SysUptime, m.Error, m.Index); err != nil {
+		return nil, err
+	}
+	for _, v := range m.VarBindList {
+		b, err := v.MarshalBinary()
+		if err != nil {
+			return nil, err
+		}
+		buf.Write(b)
+	}
+	return buf.Bytes(), nil
+}
 
-type AgentXSubtree struct {
+type ResponsePayload struct {
+	SysUptime   int32
+	Error       int16
+	Index       int16
+	VarBindList []VarBind
+}
+
+func (p *ResponsePayload) UnmarshalBinary(buf []byte) (int, error) {
+	r := bytes.NewReader(buf)
+	before := r.Len()
+
+	i := 0
+	n, err := netUnmarshalMany(r, &p.SysUptime, &p.Error, &p.Index)
+	if err != nil {
+		return i, err
+	}
+	i += n
+
+	//TODO unmarshal var bind list
+
+	return before - r.Len(), nil
+}
+
+func NoSuchObjectVarBind(oid Subtree) VarBind {
+	var v VarBind
+	v.Type = NoSuchObjectT
+	v.Name = oid
+	return v
+}
+
+// VarBind
+
+type VarBind struct {
+	Type     int16
+	Reserved int16
+	Name     Subtree
+	Data     interface{}
+}
+
+func (v VarBind) WireSize() int {
+
+	sz := 4 + v.Name.WireSize()
+
+	switch v.Type {
+	case IntegerT:
+		sz += 4
+	case OctetStringT:
+		s := v.Data.(OctetString)
+		sz += 4 + len(s.Octets)
+	//TODO below not implemented
+	case NullT:
+	case ObjectIdentifierT:
+	case IpAddressT:
+	case Counter32T:
+	case Gauge32T:
+	case TimeTicksT:
+	case OpaqueT:
+	case Counter64T:
+	case NoSuchObjectT:
+	case NoSuchInstanceT:
+	case EndOfMibViewT:
+	}
+
+	return sz
+}
+
+func (v VarBind) MarshalBinary() ([]byte, error) {
+	buf := new(bytes.Buffer)
+
+	if err := netMarshalMany(buf, v.Type, v.Reserved); err != nil {
+		return nil, err
+	}
+
+	if _, err := marshalToBuf(buf, &v.Name); err != nil {
+		return nil, err
+	}
+
+	switch v.Type {
+	case IntegerT:
+		i := v.Data.(int32)
+		if err := netMarshal(buf, i); err != nil {
+			return nil, err
+		}
+	case OctetStringT:
+		s := v.Data.(OctetString)
+		if _, err := marshalToBuf(buf, &s); err != nil {
+			return nil, err
+		}
+	//TODO below not implemented
+	case NullT:
+	case ObjectIdentifierT:
+	case IpAddressT:
+	case Counter32T:
+	case Gauge32T:
+	case TimeTicksT:
+	case OpaqueT:
+	case Counter64T:
+	case NoSuchObjectT:
+	case NoSuchInstanceT:
+	case EndOfMibViewT:
+	}
+
+	return buf.Bytes(), nil
+}
+
+func (v *VarBind) UnmarshalBinary(buf []byte) (int, error) {
+	r := bytes.NewReader(buf)
+	before := r.Len()
+
+	i := 0
+	n, err := netUnmarshalMany(r, &v.Type, &v.Reserved)
+	if err != nil {
+		return i, err
+	}
+	i += n
+
+	n, err = v.Name.UnmarshalBinary(buf[i:])
+	if err != nil {
+		return i, err
+	}
+	i += n
+
+	r = bytes.NewReader(buf[i:])
+	switch v.Type {
+	case IntegerT:
+		var x int32
+		n, err := netUnmarshal(r, &x)
+		if err != nil {
+			return i, err
+		}
+		v.Data = x
+		i += n
+	case OctetStringT:
+		var x OctetString
+		n, err := x.UnmarshalBinary(buf[i:])
+		if err != nil {
+			return i, err
+		}
+		v.Data = x
+		i += n
+	//TODO below not implemented
+	case NullT:
+	case ObjectIdentifierT:
+	case IpAddressT:
+	case Counter32T:
+	case Gauge32T:
+	case TimeTicksT:
+	case OpaqueT:
+	case Counter64T:
+	case NoSuchObjectT:
+	case NoSuchInstanceT:
+	case EndOfMibViewT:
+	}
+
+	return before - r.Len(), nil
+}
+
+// Subtree ....................................................................
+
+type Subtree struct {
 	NSubid, Prefix, Zero, Reserved byte
 	SubIdentifiers                 []int32
 }
 
-func (s AgentXSubtree) MarshalBinary() ([]byte, error) {
+func (s Subtree) WireSize() int {
+	return 4 + len(s.SubIdentifiers)*4
+}
+
+func NewSubtree(oid string) (*Subtree, error) {
+	t := &Subtree{}
+
+	ids := strings.Split(oid, ".")
+	t.NSubid = byte(len(ids))
+	for _, x := range ids {
+		i, err := strconv.ParseInt(x, 10, 32)
+		if err != nil {
+			return nil, fmt.Errorf("bad id, must be oid format: %v", err)
+		}
+		t.SubIdentifiers = append(t.SubIdentifiers, int32(i))
+	}
+
+	return t, nil
+}
+
+func (s Subtree) String() string {
+	str := strconv.Itoa(int(s.SubIdentifiers[0]))
+	for _, x := range s.SubIdentifiers[1:] {
+		str += "." + strconv.Itoa(int(x))
+	}
+	return str
+}
+
+func (s Subtree) MarshalBinary() ([]byte, error) {
 	buf := new(bytes.Buffer)
 
 	if err := netMarshalMany(buf,
@@ -167,13 +366,15 @@ func (s AgentXSubtree) MarshalBinary() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func (s *AgentXSubtree) UnmarshalBinary(buf []byte) (int, error) {
+func (s *Subtree) UnmarshalBinary(buf []byte) (int, error) {
 	r := bytes.NewReader(buf)
+	before := r.Len()
 
 	if n, err := netUnmarshalMany(r,
 		&s.NSubid, &s.Prefix, &s.Zero, &s.Reserved); err != nil {
 		return n, err
 	}
+	//log.Printf("reading %d subids", int(s.NSubid))
 	for i := 0; i < int(s.NSubid); i++ {
 		var v int32
 		if n, err := netUnmarshal(r, &v); err != nil {
@@ -181,20 +382,32 @@ func (s *AgentXSubtree) UnmarshalBinary(buf []byte) (int, error) {
 		}
 		s.SubIdentifiers = append(s.SubIdentifiers, v)
 	}
-	return int(r.Size()) - r.Len(), nil
+	return before - r.Len(), nil
 }
 
-// AgentXOctetString ..........................................................
+// OctetString ..........................................................
 
-type AgentXOctetString struct {
+type OctetString struct {
 	OctetStringLength int32
 	Octets            []byte
 }
 
-func (s *AgentXOctetString) Pad() int {
+func NewOctetString(s string) *OctetString {
+	os := &OctetString{}
+	bs := []byte(s)
+	os.OctetStringLength = int32(len(bs))
+	os.Octets = bs
+	os.Pad()
+	return os
+}
+
+func (s *OctetString) Pad() int {
 	r := len(s.Octets) % 4
 	if r == 0 {
 		return 0
+	}
+	if len(s.Octets) == 0 {
+		return 4
 	}
 	n := 4 - r
 	for i := 0; i < n; i++ {
@@ -203,7 +416,7 @@ func (s *AgentXOctetString) Pad() int {
 	return n
 }
 
-func (s AgentXOctetString) MarshalBinary() ([]byte, error) {
+func (s OctetString) MarshalBinary() ([]byte, error) {
 	buf := new(bytes.Buffer)
 	s.Pad()
 
@@ -217,7 +430,7 @@ func (s AgentXOctetString) MarshalBinary() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func (s *AgentXOctetString) UnmarshalBinary(buf []byte) (int, error) {
+func (s *OctetString) UnmarshalBinary(buf []byte) (int, error) {
 	r := bytes.NewReader(buf)
 	if _, err := netUnmarshal(r, &s.OctetStringLength); err != nil {
 		return 0, err
@@ -236,11 +449,11 @@ func (s *AgentXOctetString) UnmarshalBinary(buf []byte) (int, error) {
 // open ......................................................................
 
 type OpenMessage struct {
-	Header   AgentXHeader
+	Header   Header
 	Timeout  byte
 	Reserved [3]byte
-	Id       AgentXSubtree
-	Desc     AgentXOctetString
+	Id       Subtree
+	Desc     OctetString
 }
 
 func NewOpenMessage(id, descr *string) (*OpenMessage, error) {
@@ -324,7 +537,7 @@ func (m *OpenMessage) UnmarshalBinary(buf []byte) (int, error) {
 // close ......................................................................
 
 type CloseMessage struct {
-	Header   AgentXHeader
+	Header   Header
 	Reason   byte
 	Reserved [3]byte
 }
@@ -337,7 +550,7 @@ func NewCloseMessage(reason byte, sessionId int32) *CloseMessage {
 	m.Header.PayloadLength = 4
 	m.Header.SessionId = sessionId
 	m.Header.PacketId = 1
-	m.Header.TransactionId = 0
+	m.Header.TransactionId = CloseTransactionId
 	m.Reason = reason
 	return m
 }
@@ -383,10 +596,10 @@ const (
 // register ...................................................................
 
 type RegisterMessage struct {
-	Header                                  AgentXHeader
-	Context                                 *AgentXOctetString
+	Header                                  Header
+	Context                                 *OctetString
 	Timeout, Priority, RangeSubid, Reserved byte
-	Subtree                                 AgentXSubtree
+	Subtree                                 Subtree
 	UpperBound                              *int32
 }
 
@@ -398,6 +611,7 @@ func NewRegisterMessage(subtree string, context *string, upperBound *int32) (
 	m.Header.Type = RegisterPDU
 	m.Header.Flags = NetworkByteOrder
 	m.Header.PayloadLength = 4
+	m.Header.TransactionId = RegisterTransactionId
 	m.Timeout = ConnectionTimeout //from agx.go
 	m.Priority = BasePriority     //from agx.go
 	if context != nil {
@@ -406,25 +620,17 @@ func NewRegisterMessage(subtree string, context *string, upperBound *int32) (
 
 	//context
 	if context != nil {
-		m.Context = &AgentXOctetString{}
-		bs := []byte(*context)
-		m.Context.OctetStringLength = int32(len(bs))
-		m.Context.Octets = bs
-		padlen := m.Context.Pad()
-		m.Header.PayloadLength += int32(4 + len(bs) + padlen)
+		m.Context = NewOctetString(*context)
+		m.Header.PayloadLength += 4 + int32(len(m.Context.Octets))
 	}
 
 	//subtree
-	ids := strings.Split(subtree, ".")
-	m.Subtree.NSubid = byte(len(ids))
-	m.Header.PayloadLength += int32(4 + 4*m.Subtree.NSubid)
-	for _, x := range ids {
-		i, err := strconv.ParseInt(x, 10, 32)
-		if err != nil {
-			return nil, fmt.Errorf("bad id, must be oid format: %v", err)
-		}
-		m.Subtree.SubIdentifiers = append(m.Subtree.SubIdentifiers, int32(i))
+	subtree_, err := NewSubtree(subtree)
+	if err != nil {
+		return nil, err
 	}
+	m.Subtree = *subtree_
+	m.Header.PayloadLength += int32(4 + 4*m.Subtree.NSubid)
 
 	//upper bound
 	if upperBound != nil {
@@ -464,7 +670,6 @@ func (m RegisterMessage) MarshalBinary() ([]byte, error) {
 			return nil, err
 		}
 	}
-
 	return buf.Bytes(), nil
 }
 
@@ -477,7 +682,7 @@ func (m *RegisterMessage) UnmarshalBinary(buf []byte) (int, error) {
 	i += n
 
 	if (m.Header.Flags & NonDefaultContext) != 0 {
-		m.Context = &AgentXOctetString{}
+		m.Context = &OctetString{}
 		n, err = m.Context.UnmarshalBinary(buf[i:])
 		if err != nil {
 			return i, nil
@@ -520,7 +725,53 @@ func NewUnregisterMessage(subtree string, context *string, upperBound *int32) (
 		return nil, err
 	}
 	m.Header.Type = UnregisterPDU
+	m.Header.TransactionId = UnregisterTransactionId
 	return m, nil
+}
+
+// get ........................................................................
+
+type GetMessage struct {
+	Header          Header
+	Context         *OctetString
+	SearchRangeList []Subtree
+}
+
+const (
+	SearchRangeListPaddingLength = 4
+)
+
+func (m *GetMessage) UnmarshalBinary(buf []byte) (int, error) {
+	i := 0
+	n, err := m.Header.UnmarshalBinary(buf)
+	if err != nil {
+		return i, nil
+	}
+	i += n
+
+	if (m.Header.Flags & NonDefaultContext) != 0 {
+		m.Context = &OctetString{}
+		n, err = m.Context.UnmarshalBinary(buf[i:])
+		if err != nil {
+			return i, nil
+		}
+		i += n
+	}
+
+	for i < len(buf) {
+		var t Subtree
+		n, err = t.UnmarshalBinary(buf[i:])
+		if err != nil {
+			return i, nil
+		}
+		i += n + SearchRangeListPaddingLength
+		if t.NSubid == 0 {
+			continue
+		}
+		m.SearchRangeList = append(m.SearchRangeList, t)
+	}
+
+	return i, nil
 }
 
 // helpers ====================================================================
@@ -556,7 +807,7 @@ func netUnmarshalMany(r *bytes.Reader, items ...interface{}) (int, error) {
 	return n, nil
 }
 
-func marshalToBuf(buf *bytes.Buffer, m AgentXMessage) (int, error) {
+func marshalToBuf(buf *bytes.Buffer, m Message) (int, error) {
 	b, err := m.MarshalBinary()
 	if err != nil {
 		return 0, err
@@ -565,7 +816,7 @@ func marshalToBuf(buf *bytes.Buffer, m AgentXMessage) (int, error) {
 	return n, err
 }
 
-func marshalToBufs(buf *bytes.Buffer, ms ...AgentXMessage) (int, error) {
+func marshalToBufs(buf *bytes.Buffer, ms ...Message) (int, error) {
 	n := 0
 	for _, m := range ms {
 		m, err := marshalToBuf(buf, m)

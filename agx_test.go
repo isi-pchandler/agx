@@ -2,6 +2,7 @@ package agx_test
 
 import (
 	"github.com/rcgoodfellow/agx"
+	"log"
 	"testing"
 )
 
@@ -18,51 +19,35 @@ func TestConnect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connection failed %v", err)
 	}
+	defer c.Disconnect()
 
-	_, err = c.Register(qbridge)
+	err = c.Register(qbridge)
 	if err != nil {
-		t.Fatalf("agent registration failed failed %v", err)
+		t.Fatalf("agent registration failed %v", err)
 	}
+	defer func() {
+		err = c.Unregister(qbridge)
+		if err != nil {
+			t.Fatalf("agent registration failed %v", err)
+		}
+	}()
 
-	_, err = c.Unregister(qbridge)
-	if err != nil {
-		t.Fatalf("agent registration failed failed %v", err)
-	}
+	c.OnGet(qbridge, func(oid agx.Subtree) agx.VarBind {
 
-	c.Disconnect()
+		log.Println("[qbridge] handling request")
 
-	/*
-		TODO
-			gc := make(chan agx.PDU)
-			sc := make(chan agx.PDU)
-			gi := make(chan agx.OID)
-			si := make(chan agx.OID)
+		var v agx.VarBind
+		v.Type = agx.OctetStringT
+		v.Name = oid
+		v.Data = *agx.NewOctetString(string([]byte{0xcc, 0x33}))
 
-			agent.OnGet(egress, func(oid agx.OID) agx.PDU {
-				pdu := agx.NewOctetString([]byte{0xcc, 0x33})
-				gc <- pdu
-				gi <- oid
-				return pdu
-			})
+		return v
 
-			agent.OnSet(egress, func(oid agx.OID, pdu agx.PDU) {
-				sc <- pdu
-				si <- oid
-			})
+	})
 
-			got, set := <-gc, <-sc
-			gid, sid := <-gi, <-si
-
-			t.Log("gid: %s", gid.String())
-			t.Log("sid: %s", sid.String())
-
-			if got != agx.NewOctetString([]byte{0xcc, 0x33}) {
-				t.Error("unexpected get response")
-			}
-
-			if set != agx.NewOctetString([]byte{0x33, 0xcc}) {
-				t.Error("unexpected set response")
-			}
-	*/
+	//wait for connection to close
+	log.Printf("waiting for close event")
+	<-c.Closed
+	log.Printf("test finished")
 
 }

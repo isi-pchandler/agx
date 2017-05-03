@@ -11,30 +11,30 @@ I am still pushing toward an initial release and the library is not yet fully fu
 The example below sets up an agent to manage vlans using the [Q-BRIDGE](https://tools.ietf.org/html/rfc4363) standard.
 ```go
 package main
+
 import "github.com/rcgoodfellow/agx"
 
-const (
-	qbridge = "1.3.5.1.2.1.17"
-	egress  = "1.3.6.1.2.1.17.7.1.4.3.1.2"
-)
-
-int main(){
-	id, descr := "1.2.3.4.7", "qbridge agent"
+func main() {
+	id, descr := "qbridge-agent", "agent for controlling valns"
+	qbridge := "1.3.5.1.2.1.17"
+	
 	c, err := agx.Connect(&id, &descr)
 	defer c.Disconnect()
-
-	agent, err = c.Register(qbridge)
+	
+	c.Register(qbridge)
 	defer c.Unregister(qbridge)
 
-	agent.OnGet(egress, func(oid agx.OID) agx.PDU {
-		return agx.NewOctetString(getVlanState())
+	c.OnGet(qbridge, func(oid agx.Subtree) agx.VarBind {
+
+		var v agx.VarBind
+		v.Type = agx.OctetStringT
+		v.Name = oid
+		v.Data = *agx.NewOctetString(string([]byte{0xcc, 0x33}))
+		return v
+
 	})
 
-	agent.OnSet(egress, func(oid agx.OID, pdu agx.PDU) {
-		setVlanState(pdu.Bytes())
-		agent.Quit()
-	})
-	
-	agent.Wait()
+	//wait for connection to close
+	<-c.Closed
 }
 ```

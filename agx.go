@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"sort"
 )
 
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -181,7 +182,6 @@ func sendrecvMsg(m Message, c *Connection) (*Header, []byte, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-
 	return recvMsg(c)
 }
 
@@ -213,6 +213,8 @@ func rootMessageHandler(c *Connection) {
 			}
 		case GetPDU:
 			handleGet(c, hdr, buf)
+		case GetNextPDU:
+			handleGetNext(c, hdr, buf)
 		default:
 			log.Printf("[roogMH] unknown message")
 		}
@@ -267,7 +269,7 @@ func handleGet(c *Connection, h *Header, buf []byte) {
 	g := &GetMessage{}
 	_, err := g.UnmarshalBinary(buf)
 	if err != nil {
-		log.Printf("[rootMH] error unmarshalling GetPDU %v\n", err)
+		log.Printf("[get] error unmarshalling GetPDU %v\n", err)
 	}
 
 	var r Response
@@ -281,6 +283,9 @@ func handleGet(c *Connection, h *Header, buf []byte) {
 
 	for _, x := range g.SearchRangeList {
 		oid := x.String()
+		if x.Prefix != 0 {
+			oid = fmt.Sprintf("1.3.6.1.%d.%s", x.Prefix, oid)
+		}
 		handler, ok := c.getHandlers[oid]
 		if !ok {
 			log.Printf("[get] no handler for %s", oid)
@@ -296,4 +301,77 @@ func handleGet(c *Connection, h *Header, buf []byte) {
 	}
 
 	sendMsg(&r, c)
+}
+
+func handleGetNext(c *Connection, h *Header, buf []byte) {
+	log.Printf("[getnext]")
+	g := &GetNextMessage{}
+	_, err := g.UnmarshalBinary(buf)
+	if err != nil {
+		log.Printf("[getnext] error unmarshalling GetNextPDU %v\n", err)
+	}
+
+	var r Response
+	r.Header.Version = 1
+	r.Header.Type = ResponsePDU
+	r.Header.Flags = h.Flags & NetworkByteOrder
+	r.Header.SessionId = c.sessionId
+	r.Header.TransactionId = h.TransactionId
+	r.Header.PacketId = h.PacketId
+	r.Header.PayloadLength = 8
+
+	for _, x := range g.SearchRangeList {
+		oid := x.String()
+		if x.Prefix != 0 {
+			oid = fmt.Sprintf("1.3.6.1.%d.%s", x.Prefix, oid)
+		}
+
+		nextkey, handler, ok := c.getNextHandler(oid)
+		if !ok {
+			log.Printf("[get] no handler for %s", oid)
+			vb := EndOfMibViewVarBind(x)
+			r.VarBindList = append(r.VarBindList, vb)
+			r.Header.PayloadLength += int32(vb.WireSize())
+		} else {
+			nextoid, err := NewSubtree(nextkey)
+			if err != nil {
+				log.Printf("error reading nextoid %s", nextkey)
+				continue
+			}
+			log.Printf("[getnext] passing along %s", oid)
+			vb := handler(*nextoid)
+			r.VarBindList = append(r.VarBindList, vb)
+			r.Header.PayloadLength += int32(vb.WireSize())
+		}
+	}
+	sendMsg(&r, c)
+}
+
+//TODO it's probably inefficient to sort every time maybehapps this information
+//     should be cached somewhere
+func (c *Connection) getNextHandler(oid string) (string, GetHandler, bool) {
+	keys := make([]string, 0, len(c.getHandlers))
+
+	_, ok := c.getHandlers[oid]
+	if !ok {
+		keys = append(keys, oid)
+	}
+
+	for key, _ := range c.getHandlers {
+		keys = append(keys, key)
+	}
+
+	sort.Strings(keys)
+
+	for _, x := range keys {
+		log.Print(x)
+	}
+
+	idx := sort.SearchStrings(keys, oid)
+	if idx >= len(keys)-1 {
+		return "", nil, false
+	} else {
+		nextkey := keys[idx+1]
+		return nextkey, c.getHandlers[nextkey], true
+	}
 }

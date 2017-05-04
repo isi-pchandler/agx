@@ -189,6 +189,13 @@ func NoSuchObjectVarBind(oid Subtree) VarBind {
 	return v
 }
 
+func EndOfMibViewVarBind(oid Subtree) VarBind {
+	var v VarBind
+	v.Type = EndOfMibViewT
+	v.Name = oid
+	return v
+}
+
 // VarBind
 
 type VarBind struct {
@@ -208,12 +215,13 @@ func (v VarBind) WireSize() int {
 	case OctetStringT:
 		s := v.Data.(OctetString)
 		sz += 4 + len(s.Octets)
+	case Gauge32T:
+		sz += 4
 	//TODO below not implemented
 	case NullT:
 	case ObjectIdentifierT:
 	case IpAddressT:
 	case Counter32T:
-	case Gauge32T:
 	case TimeTicksT:
 	case OpaqueT:
 	case Counter64T:
@@ -247,12 +255,16 @@ func (v VarBind) MarshalBinary() ([]byte, error) {
 		if _, err := marshalToBuf(buf, &s); err != nil {
 			return nil, err
 		}
+	case Gauge32T:
+		i := v.Data.(uint32)
+		if err := netMarshal(buf, i); err != nil {
+			return nil, err
+		}
 	//TODO below not implemented
 	case NullT:
 	case ObjectIdentifierT:
 	case IpAddressT:
 	case Counter32T:
-	case Gauge32T:
 	case TimeTicksT:
 	case OpaqueT:
 	case Counter64T:
@@ -299,12 +311,19 @@ func (v *VarBind) UnmarshalBinary(buf []byte) (int, error) {
 		}
 		v.Data = x
 		i += n
+	case Gauge32T:
+		var x uint32
+		n, err := netUnmarshal(r, &x)
+		if err != nil {
+			return i, err
+		}
+		v.Data = x
+		i += n
 	//TODO below not implemented
 	case NullT:
 	case ObjectIdentifierT:
 	case IpAddressT:
 	case Counter32T:
-	case Gauge32T:
 	case TimeTicksT:
 	case OpaqueT:
 	case Counter64T:
@@ -314,6 +333,22 @@ func (v *VarBind) UnmarshalBinary(buf []byte) (int, error) {
 	}
 
 	return before - r.Len(), nil
+}
+
+func IntegerVarBind(oid Subtree, value int32) VarBind {
+	var v VarBind
+	v.Type = IntegerT
+	v.Name = oid
+	v.Data = value
+	return v
+}
+
+func Gauge32VarBind(oid Subtree, value uint32) VarBind {
+	var v VarBind
+	v.Type = Gauge32T
+	v.Name = oid
+	v.Data = value
+	return v
 }
 
 // Subtree ....................................................................
@@ -737,11 +772,23 @@ type GetMessage struct {
 	SearchRangeList []Subtree
 }
 
+type GetNextMessage struct {
+	GetMessage
+}
+
 const (
 	SearchRangeListPaddingLength = 4
 )
 
 func (m *GetMessage) UnmarshalBinary(buf []byte) (int, error) {
+	return m.unmarshalBinary(buf, true)
+}
+
+func (m *GetNextMessage) UnmarshalBinary(buf []byte) (int, error) {
+	return m.GetMessage.unmarshalBinary(buf, true)
+}
+
+func (m *GetMessage) unmarshalBinary(buf []byte, padded bool) (int, error) {
 	i := 0
 	n, err := m.Header.UnmarshalBinary(buf)
 	if err != nil {
@@ -764,7 +811,9 @@ func (m *GetMessage) UnmarshalBinary(buf []byte) (int, error) {
 		if err != nil {
 			return i, nil
 		}
-		i += n + SearchRangeListPaddingLength
+		if padded {
+			i += n + SearchRangeListPaddingLength
+		}
 		if t.NSubid == 0 {
 			continue
 		}

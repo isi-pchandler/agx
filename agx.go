@@ -352,21 +352,20 @@ func handleGetNext(c *Connection, h *Header, buf []byte) {
 func (c *Connection) getNextHandler(oid string) (string, GetHandler, bool) {
 	keys := make([]string, 0, len(c.getHandlers))
 
+	//if the starting key is not here add it so we can use it as a point of
+	//reference in the sorted keys
 	_, ok := c.getHandlers[oid]
 	if !ok {
 		keys = append(keys, oid)
 	}
 
+	//create a sorted list of oid keys
 	for key, _ := range c.getHandlers {
 		keys = append(keys, key)
 	}
-
 	sort.Strings(keys)
 
-	for _, x := range keys {
-		log.Print(x)
-	}
-
+	//find where the starting key is in the sorted set and return the one after
 	idx := sort.SearchStrings(keys, oid)
 	if idx >= len(keys)-1 {
 		return "", nil, false

@@ -2,6 +2,7 @@ package main
 
 import (
 	"github.com/rcgoodfellow/agx"
+	"github.com/rcgoodfellow/netlink"
 	"log"
 )
 
@@ -94,6 +95,18 @@ func main() {
 
 		log.Printf("[qbridge][get] supportedvlans=%d", max_supported_vlans)
 		return agx.Gauge32VarBind(oid, max_supported_vlans)
+
+	})
+
+	c.OnGet(qb_numvlans, func(oid agx.Subtree) agx.VarBind {
+
+		bridges, _ := netlink.GetBridgeInfo()
+		numvlans := 0
+		for _, bridge := range bridges {
+			numvlans += len(bridge.Vlans)
+		}
+		log.Printf("[qbridge][get] numvlans=%d", numvlans)
+		return agx.Gauge32VarBind(oid, uint32(numvlans))
 
 	})
 

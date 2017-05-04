@@ -110,11 +110,12 @@ func (h Header) MarshalBinary() ([]byte, error) {
 
 func (h *Header) UnmarshalBinary(buf []byte) (int, error) {
 	r := bytes.NewReader(buf)
+	begin := r.Len()
 	err := binary.Read(r, binary.BigEndian, h)
 	if err != nil {
-		return int(r.Size()) - r.Len(), err
+		return begin - r.Len(), err
 	}
-	return int(r.Size()) - r.Len(), nil
+	return begin - r.Len(), nil
 }
 
 // Response ...................................................................

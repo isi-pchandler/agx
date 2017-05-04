@@ -54,9 +54,23 @@ const (
 
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  *
+ * Data Structures
+ *
+ *~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
+
+type VlanTableEntry struct {
+	Vlan       *netlink.VlanInfo
+	Interfaces []int
+}
+
+type VlanTable map[int]*VlanTableEntry
+
+/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ *
  * Entry Point
  *
  *~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
+
 func main() {
 
 	id, descr := "1.2.3.4.7", "qbridge-agent"
@@ -100,13 +114,10 @@ func main() {
 
 	c.OnGet(qb_numvlans, func(oid agx.Subtree) agx.VarBind {
 
-		bridges, _ := netlink.GetBridgeInfo()
-		numvlans := 0
-		for _, bridge := range bridges {
-			numvlans += len(bridge.Vlans)
-		}
+		table := fetchVlanTable()
+		numvlans := uint32(len(table))
 		log.Printf("[qbridge][get] numvlans=%d", numvlans)
-		return agx.Gauge32VarBind(oid, uint32(numvlans))
+		return agx.Gauge32VarBind(oid, numvlans)
 
 	})
 
@@ -122,4 +133,26 @@ func main() {
 	<-c.Closed
 	log.Printf("test finished")
 
+}
+
+func fetchVlanTable() VlanTable {
+
+	bridges, _ := netlink.GetBridgeInfo()
+	table := make(VlanTable)
+	for _, bridge := range bridges {
+		for _, vlan := range bridge.Vlans {
+			vid := int(vlan.Vid)
+			entry, ok := table[vid]
+			if ok {
+				entry.Interfaces = append(
+					entry.Interfaces, bridge.Index)
+			} else {
+				table[vid] = &VlanTableEntry{
+					Vlan:       vlan,
+					Interfaces: []int{bridge.Index},
+				}
+			}
+		}
+	}
+	return table
 }

@@ -16,7 +16,7 @@ import "github.com/rcgoodfellow/agx"
 
 func main() {
 	id, descr := "qbridge-agent", "agent for controlling valns"
-	qbridge := "1.3.5.1.2.1.17"
+	qbridge := "1.3.6.1.2.1.17"
 	
 	c, err := agx.Connect(&id, &descr)
 	defer c.Disconnect()

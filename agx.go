@@ -19,12 +19,13 @@ import (
  *----------------------------------------------------------------------------*/
 type Connection struct {
 	//private members
-	conn          net.Conn
-	sessionId     int32
-	registrations []string
-	closed        bool
-	getHandlers   map[string]GetHandler
-	setHandlers   map[string]SetHandler
+	conn               net.Conn
+	sessionId          int32
+	registrations      []string
+	closed             bool
+	getHandlers        map[string]GetHandler
+	getSubtreeHandlers map[string]GetSubtreeHandler
+	setHandlers        map[string]SetHandler
 
 	//public members
 	Closed chan bool
@@ -130,10 +131,16 @@ func (c *Connection) doRegister(oid string, unregister bool) error {
  * Agents
  *----------------------------------------------------------------------------*/
 type GetHandler func(oid Subtree) VarBind
+type GetSubtreeHandler func(oid Subtree) []VarBind
+
 type SetHandler func(oid Subtree, pdu VarBind) VarBind
 
 func (c *Connection) OnGet(oid string, f GetHandler) {
 	c.getHandlers[oid] = f
+}
+
+func (c *Connection) OnGetSubtree(oid string, f GetSubtreeHandler) {
+	c.getSubtreeHandlers[oid] = f
 }
 
 func (c *Connection) OnSet(oid string, f SetHandler) {
@@ -340,8 +347,10 @@ func handleGetNext(c *Connection, h *Header, buf []byte) {
 			}
 			log.Printf("[getnext] passing along %s", oid)
 			vb := handler(*nextoid)
-			r.VarBindList = append(r.VarBindList, vb)
-			r.Header.PayloadLength += int32(vb.WireSize())
+			r.VarBindList = append(r.VarBindList, vb...)
+			for _, v := range vb {
+				r.Header.PayloadLength += int32(v.WireSize())
+			}
 		}
 	}
 	sendMsg(&r, c)
@@ -349,18 +358,25 @@ func handleGetNext(c *Connection, h *Header, buf []byte) {
 
 //TODO it's probably inefficient to sort every time maybehapps this information
 //     should be cached somewhere
-func (c *Connection) getNextHandler(oid string) (string, GetHandler, bool) {
-	keys := make([]string, 0, len(c.getHandlers))
+func (c *Connection) getNextHandler(oid string) (string, GetSubtreeHandler, bool) {
+	allHandlers := make(map[string]GetSubtreeHandler)
+	for k, v := range c.getSubtreeHandlers {
+		allHandlers[k] = v
+	}
+	for k, v := range wrapGetHandlers(c.getHandlers) {
+		allHandlers[k] = v
+	}
+
+	keys := make([]string, 0, len(allHandlers))
 
 	//if the starting key is not here add it so we can use it as a point of
 	//reference in the sorted keys
-	_, ok := c.getHandlers[oid]
-	if !ok {
+	if _, ok := allHandlers[oid]; !ok {
 		keys = append(keys, oid)
 	}
 
 	//create a sorted list of oid keys
-	for key, _ := range c.getHandlers {
+	for key, _ := range allHandlers {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
@@ -371,6 +387,26 @@ func (c *Connection) getNextHandler(oid string) (string, GetHandler, bool) {
 		return "", nil, false
 	} else {
 		nextkey := keys[idx+1]
-		return nextkey, c.getHandlers[nextkey], true
+		return nextkey, allHandlers[nextkey], true
 	}
+}
+
+// wrapGetHandlers wrapps an array of GetHandlers in an array of
+// GetSubtreeHandlers. This is so we can deal with regular handlers and
+// subtree handlers in the same way on getNextRequets
+func wrapGetHandlers(handlers map[string]GetHandler) map[string]GetSubtreeHandler {
+
+	subtreeHandlers := make(map[string]GetSubtreeHandler)
+
+	for k, h := range handlers {
+		//go has late binding for lambda captures so we need this outer enclosuer
+		func(k string, h GetHandler) {
+			subtreeHandlers[k] = func(oid Subtree) []VarBind {
+				return []VarBind{h(oid)}
+			}
+		}(k, h)
+	}
+
+	return subtreeHandlers
+
 }

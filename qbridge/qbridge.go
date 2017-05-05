@@ -30,15 +30,6 @@ const (
 	qb_gvrp           = q_base + ".5.0"
 )
 
-// tb
-const ()
-
-// static
-const ()
-
-// vlan
-const ()
-
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  *
  * System Constants
@@ -127,6 +118,12 @@ func main() {
 		return agx.IntegerVarBind(oid, gvrp_status)
 
 	})
+
+	/*
+		c.OnGetSubtree(q_static, func(oid agx.Subtree) []agx.VarBind {
+			panic("not implemented")
+		})
+	*/
 
 	//wait for connection to close
 	log.Printf("waiting for close event")

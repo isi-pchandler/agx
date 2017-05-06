@@ -119,11 +119,9 @@ func main() {
 
 	})
 
-	/*
-		c.OnGetSubtree(q_static, func(oid agx.Subtree) []agx.VarBind {
-			panic("not implemented")
-		})
-	*/
+	c.OnGetSubtree(q_static, func(oid agx.Subtree) agx.VarBind {
+		return agx.EndOfMibViewVarBind(oid)
+	})
 
 	//wait for connection to close
 	log.Printf("waiting for close event")

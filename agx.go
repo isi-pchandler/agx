@@ -12,6 +12,7 @@ import (
 	"log"
 	"net"
 	"sort"
+	"strings"
 )
 
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -24,7 +25,7 @@ type Connection struct {
 	registrations      []string
 	closed             bool
 	getHandlers        map[string]GetHandler
-	getSubtreeHandlers map[string]GetSubtreeHandler
+	getSubtreeHandlers map[string]GetHandler
 	setHandlers        map[string]SetHandler
 
 	//public members
@@ -52,6 +53,7 @@ func Connect(id, descr *string) (*Connection, error) {
 	c.conn = conn
 	c.Closed = make(chan bool)
 	c.getHandlers = make(map[string]GetHandler)
+	c.getSubtreeHandlers = make(map[string]GetHandler)
 	c.setHandlers = make(map[string]SetHandler)
 
 	//try to open a new AgentX session with the master
@@ -131,15 +133,13 @@ func (c *Connection) doRegister(oid string, unregister bool) error {
  * Agents
  *----------------------------------------------------------------------------*/
 type GetHandler func(oid Subtree) VarBind
-type GetSubtreeHandler func(oid Subtree) []VarBind
-
 type SetHandler func(oid Subtree, pdu VarBind) VarBind
 
 func (c *Connection) OnGet(oid string, f GetHandler) {
 	c.getHandlers[oid] = f
 }
 
-func (c *Connection) OnGetSubtree(oid string, f GetSubtreeHandler) {
+func (c *Connection) OnGetSubtree(oid string, f GetHandler) {
 	c.getSubtreeHandlers[oid] = f
 }
 
@@ -273,44 +273,14 @@ func handleUnregisterResponse(c *Connection, h *Header, buf []byte) {
 }
 
 func handleGet(c *Connection, h *Header, buf []byte) {
-	g := &GetMessage{}
-	_, err := g.UnmarshalBinary(buf)
-	if err != nil {
-		log.Printf("[get] error unmarshalling GetPDU %v\n", err)
-	}
-
-	var r Response
-	r.Header.Version = 1
-	r.Header.Type = ResponsePDU
-	r.Header.Flags = h.Flags & NetworkByteOrder
-	r.Header.SessionId = c.sessionId
-	r.Header.TransactionId = h.TransactionId
-	r.Header.PacketId = h.PacketId
-	r.Header.PayloadLength = 8
-
-	for _, x := range g.SearchRangeList {
-		oid := x.String()
-		if x.Prefix != 0 {
-			oid = fmt.Sprintf("1.3.6.1.%d.%s", x.Prefix, oid)
-		}
-		handler, ok := c.getHandlers[oid]
-		if !ok {
-			log.Printf("[get] no handler for %s", oid)
-			vb := NoSuchObjectVarBind(x)
-			r.VarBindList = append(r.VarBindList, vb)
-			r.Header.PayloadLength += int32(vb.WireSize())
-		} else {
-			log.Printf("[get] passing along %s", oid)
-			vb := handler(x)
-			r.VarBindList = append(r.VarBindList, vb)
-			r.Header.PayloadLength += int32(vb.WireSize())
-		}
-	}
-
-	sendMsg(&r, c)
+	doHandleGet(c, h, buf, false)
 }
 
 func handleGetNext(c *Connection, h *Header, buf []byte) {
+	doHandleGet(c, h, buf, true)
+}
+
+func doHandleGet(c *Connection, h *Header, buf []byte, next bool) {
 	log.Printf("[getnext]")
 	g := &GetNextMessage{}
 	_, err := g.UnmarshalBinary(buf)
@@ -333,80 +303,93 @@ func handleGetNext(c *Connection, h *Header, buf []byte) {
 			oid = fmt.Sprintf("1.3.6.1.%d.%s", x.Prefix, oid)
 		}
 
-		nextkey, handler, ok := c.getNextHandler(oid)
-		if !ok {
-			log.Printf("[get] no handler for %s", oid)
-			vb := EndOfMibViewVarBind(x)
-			r.VarBindList = append(r.VarBindList, vb)
-			r.Header.PayloadLength += int32(vb.WireSize())
-		} else {
-			nextoid, err := NewSubtree(nextkey)
-			if err != nil {
-				log.Printf("error reading nextoid %s", nextkey)
-				continue
-			}
-			log.Printf("[getnext] passing along %s", oid)
-			vb := handler(*nextoid)
-			r.VarBindList = append(r.VarBindList, vb...)
-			for _, v := range vb {
-				r.Header.PayloadLength += int32(v.WireSize())
-			}
-		}
+		vb := c.getNextVarBind(oid, next)
+		r.VarBindList = append(r.VarBindList, vb)
+		r.Header.PayloadLength += int32(vb.WireSize())
 	}
 	sendMsg(&r, c)
 }
 
-//TODO it's probably inefficient to sort every time maybehapps this information
-//     should be cached somewhere
-func (c *Connection) getNextHandler(oid string) (string, GetSubtreeHandler, bool) {
-	allHandlers := make(map[string]GetSubtreeHandler)
-	for k, v := range c.getSubtreeHandlers {
-		allHandlers[k] = v
-	}
-	for k, v := range wrapGetHandlers(c.getHandlers) {
-		allHandlers[k] = v
-	}
+type HandlerType int
 
-	keys := make([]string, 0, len(allHandlers))
+const (
+	GetHandlerType        = 1
+	GetSubtreeHandlerType = 2
+)
 
-	//if the starting key is not here add it so we can use it as a point of
-	//reference in the sorted keys
-	if _, ok := allHandlers[oid]; !ok {
-		keys = append(keys, oid)
-	}
-
-	//create a sorted list of oid keys
-	for key, _ := range allHandlers {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-
-	//find where the starting key is in the sorted set and return the one after
-	idx := sort.SearchStrings(keys, oid)
-	if idx >= len(keys)-1 {
-		return "", nil, false
-	} else {
-		nextkey := keys[idx+1]
-		return nextkey, allHandlers[nextkey], true
-	}
+type HandlerBundle struct {
+	Oid     string
+	Type    HandlerType
+	Handler GetHandler
 }
 
-// wrapGetHandlers wrapps an array of GetHandlers in an array of
-// GetSubtreeHandlers. This is so we can deal with regular handlers and
-// subtree handlers in the same way on getNextRequets
-func wrapGetHandlers(handlers map[string]GetHandler) map[string]GetSubtreeHandler {
+type HandlerBundles []HandlerBundle
 
-	subtreeHandlers := make(map[string]GetSubtreeHandler)
+func (hs HandlerBundles) Len() int           { return len(hs) }
+func (hs HandlerBundles) Swap(i, j int)      { hs[i], hs[j] = hs[j], hs[i] }
+func (hs HandlerBundles) Less(i, j int) bool { return hs[i].Oid < hs[j].Oid }
 
-	for k, h := range handlers {
-		//go has late binding for lambda captures so we need this outer enclosuer
-		func(k string, h GetHandler) {
-			subtreeHandlers[k] = func(oid Subtree) []VarBind {
-				return []VarBind{h(oid)}
-			}
-		}(k, h)
+//TODO it's probably inefficient to sort every time maybehapps this information
+//     should be cached somewhere
+func (c *Connection) getNextVarBind(oid string, next bool) VarBind {
+
+	//make the array to hold the handlers that has a size equal to the sum of
+	//the two handler maps
+	allHandlers := make(HandlerBundles, 0,
+		len(c.getSubtreeHandlers)+len(c.getHandlers))
+
+	//if the list of handlers does not contain what we are looking for exactly
+	//then the 'next' entry is actually the first entry found by the recursive
+	//search algorithm
+	if _, ok := c.getHandlers[oid]; !ok {
+		if _, ok := c.getSubtreeHandlers[oid]; !ok {
+			next = false
+		}
 	}
 
-	return subtreeHandlers
+	//bundle up the handlers in to one list and sort it according to oid
+	for k, v := range c.getSubtreeHandlers {
+		allHandlers = append(allHandlers,
+			HandlerBundle{Oid: k, Type: GetSubtreeHandlerType, Handler: v})
+	}
+	for k, v := range c.getHandlers {
+		allHandlers = append(allHandlers,
+			HandlerBundle{Oid: k, Type: GetHandlerType, Handler: v})
+	}
+	sort.Sort(allHandlers)
 
+	//return whatever var search comes up with
+	return varSearch(oid, allHandlers, next)
+}
+
+// varSearch is a recursive algorithms for binding ain input oid to a variable
+// instance. In the case that next is false, it binds to the first matching oid
+// it finds, otherwise it binds to the following oid.
+func varSearch(oid string, handlers []HandlerBundle, next bool) VarBind {
+	subtree, _ := NewSubtree(oid)
+	if len(handlers) == 0 {
+		return EndOfMibViewVarBind(*subtree)
+	}
+	h := handlers[0]
+	subtree, _ = NewSubtree(h.Oid)
+	if h.Type == GetSubtreeHandlerType {
+		if strings.HasPrefix(h.Oid, oid) {
+			vb := h.Handler(*subtree)
+			//if the subtree does not have the target oid we fall through to continue
+			//searching
+			if vb.Type != EndOfMibViewT {
+				return vb
+			}
+		}
+	} else {
+		if h.Oid >= oid {
+			if next {
+				next = false
+			} else {
+				return h.Handler(*subtree)
+			}
+		}
+	}
+	//recursive continuation
+	return varSearch(oid, handlers[1:], next)
 }

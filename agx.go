@@ -12,7 +12,6 @@ import (
 	"log"
 	"net"
 	"sort"
-	"unicode/utf8"
 )
 
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -277,6 +276,7 @@ func handleGet(c *Connection, h *Header, buf []byte) {
 }
 
 func handleGetNext(c *Connection, h *Header, buf []byte) {
+	log.Printf("[handle-get-next] PACKET=%d", h.PacketId)
 	doHandleGet(c, h, buf, true)
 }
 
@@ -374,12 +374,9 @@ func varSearch(oid string, handlers []HandlerBundle, next bool) VarBind {
 	subtree, _ = NewSubtree(h.Oid)
 	if h.Type == GetSubtreeHandlerType {
 		log.Printf("subtree@ %s %s", oid, h.Oid)
-		//XXX to this tests if the requested oid and the handler oid have a common
-		//    prefix upto the intenet prefix. Because I am not sure, within the
-		//    context of the agentx protocol how to extract the original search term
-		//    atm, all I have access to is what was previous in the walk (if this
-		//    indeed a part of a walk.
-		if commonPrefixLen(oid, h.Oid) > 4 {
+		//truncate the target oid to the prefix length of the handler, if the handler
+		//comes at or after the truncation it should be executed
+		if h.Oid >= oid[:len(h.Oid)] {
 			vb := h.Handler(*subtree)
 			//if the subtree does not have the target oid we fall through to continue
 			//searching
@@ -398,11 +395,4 @@ func varSearch(oid string, handlers []HandlerBundle, next bool) VarBind {
 	}
 	//recursive continuation
 	return varSearch(oid, handlers[1:], next)
-}
-
-func commonPrefixLen(a, b string) int {
-	i := 0
-	for ; i < len(a) && i < len(b) && a[i] < utf8.RuneSelf && a[i] == b[i]; i++ {
-	}
-	return i
 }

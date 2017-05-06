@@ -120,7 +120,10 @@ func main() {
 	})
 
 	c.OnGetSubtree(q_static, func(oid agx.Subtree) agx.VarBind {
+
+		log.Printf("[q_static][get-subtree] oid::%s", oid.String())
 		return agx.EndOfMibViewVarBind(oid)
+
 	})
 
 	//wait for connection to close

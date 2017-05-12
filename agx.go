@@ -24,8 +24,8 @@ type Connection struct {
 	registrations      []string
 	closed             bool
 	getHandlers        map[string]GetHandler
-	getSubtreeHandlers map[string]GetHandler
-	setHandlers        map[string]SetHandler
+	getSubtreeHandlers map[string]GetSubtreeHandler
+	testSetHandlers    map[string]TestSetHandler
 
 	//public members
 	Closed chan bool
@@ -52,8 +52,8 @@ func Connect(id, descr *string) (*Connection, error) {
 	c.conn = conn
 	c.Closed = make(chan bool)
 	c.getHandlers = make(map[string]GetHandler)
-	c.getSubtreeHandlers = make(map[string]GetHandler)
-	c.setHandlers = make(map[string]SetHandler)
+	c.getSubtreeHandlers = make(map[string]GetSubtreeHandler)
+	c.testSetHandlers = make(map[string]TestSetHandler)
 
 	//try to open a new AgentX session with the master
 	m, err := NewOpenMessage(id, descr)
@@ -132,18 +132,19 @@ func (c *Connection) doRegister(oid string, unregister bool) error {
  * Agents
  *----------------------------------------------------------------------------*/
 type GetHandler func(oid Subtree) VarBind
-type SetHandler func(oid Subtree, pdu VarBind) VarBind
+type GetSubtreeHandler func(oid Subtree, next bool) VarBind
+type TestSetHandler func(vars VarBind) TestSetResult
 
 func (c *Connection) OnGet(oid string, f GetHandler) {
 	c.getHandlers[oid] = f
 }
 
-func (c *Connection) OnGetSubtree(oid string, f GetHandler) {
+func (c *Connection) OnGetSubtree(oid string, f GetSubtreeHandler) {
 	c.getSubtreeHandlers[oid] = f
 }
 
-func (c *Connection) OnSet(oid string, f SetHandler) {
-	c.setHandlers[oid] = f
+func (c *Connection) OnTestSet(oid string, f TestSetHandler) {
+	c.testSetHandlers[oid] = f
 }
 
 // helper functions ===========================================================
@@ -221,6 +222,8 @@ func rootMessageHandler(c *Connection) {
 			handleGet(c, hdr, buf)
 		case GetNextPDU:
 			handleGetNext(c, hdr, buf)
+		case TestSetPDU:
+			handleTestSet(c, hdr, buf)
 		default:
 			log.Printf("[roogMH] unknown message")
 		}
@@ -271,6 +274,8 @@ func handleUnregisterResponse(c *Connection, h *Header, buf []byte) {
 		c.registrations[h.PacketId])
 }
 
+// get handling ...............................................................
+
 func handleGet(c *Connection, h *Header, buf []byte) {
 	doHandleGet(c, h, buf, false)
 }
@@ -298,12 +303,7 @@ func doHandleGet(c *Connection, h *Header, buf []byte, next bool) {
 	r.Header.PayloadLength = 8
 
 	for _, x := range g.SearchRangeList {
-		oid := x.String()
-		if x.Prefix != 0 {
-			oid = fmt.Sprintf("1.3.6.1.%d.%s", x.Prefix, oid)
-		}
-
-		vb := c.getNextVarBind(oid, next)
+		vb := c.getNextVarBind(x.String(), next)
 		r.VarBindList = append(r.VarBindList, vb)
 		r.Header.PayloadLength += int32(vb.WireSize())
 	}
@@ -320,7 +320,7 @@ const (
 type HandlerBundle struct {
 	Oid     string
 	Type    HandlerType
-	Handler GetHandler
+	Handler interface{}
 }
 
 type HandlerBundles []HandlerBundle
@@ -333,6 +333,8 @@ func (hs HandlerBundles) Less(i, j int) bool { return hs[i].Oid < hs[j].Oid }
 //     should be cached somewhere
 func (c *Connection) getNextVarBind(oid string, next bool) VarBind {
 
+	log.Printf("[get-next-vb] oid=%s next=%v", oid, next)
+
 	//make the array to hold the handlers that has a size equal to the sum of
 	//the two handler maps
 	allHandlers := make(HandlerBundles, 0,
@@ -343,7 +345,7 @@ func (c *Connection) getNextVarBind(oid string, next bool) VarBind {
 	//search algorithm
 	if _, ok := c.getHandlers[oid]; !ok {
 		if _, ok := c.getSubtreeHandlers[oid]; !ok {
-			next = false
+			//next = false
 		}
 	}
 
@@ -362,22 +364,23 @@ func (c *Connection) getNextVarBind(oid string, next bool) VarBind {
 	return varSearch(oid, allHandlers, next)
 }
 
-// varSearch is a recursive algorithms for binding ain input oid to a variable
+// varSearch is a recursive algorithm for binding ain input oid to a variable
 // instance. In the case that next is false, it binds to the first matching oid
 // it finds, otherwise it binds to the following oid.
 func varSearch(oid string, handlers []HandlerBundle, next bool) VarBind {
+	log.Printf("[var-search] oid=%s next=%v", oid, next)
 	subtree, _ := NewSubtree(oid)
 	if len(handlers) == 0 {
 		return EndOfMibViewVarBind(*subtree)
 	}
 	h := handlers[0]
-	subtree, _ = NewSubtree(h.Oid)
+	h_subtree, _ := NewSubtree(h.Oid)
 	if h.Type == GetSubtreeHandlerType {
-		log.Printf("subtree@ %s %s", oid, h.Oid)
+		log.Printf("subtree@ %s %s next=%v", oid, h.Oid, next)
 		//truncate the target oid to the prefix length of the handler, if the handler
 		//comes at or after the truncation it should be executed
 		if h.Oid >= oid[:len(h.Oid)] {
-			vb := h.Handler(*subtree)
+			vb := h.Handler.(GetSubtreeHandler)(*subtree, next)
 			//if the subtree does not have the target oid we fall through to continue
 			//searching
 			if vb.Type != EndOfMibViewT {
@@ -389,10 +392,42 @@ func varSearch(oid string, handlers []HandlerBundle, next bool) VarBind {
 			if next {
 				next = false
 			} else {
-				return h.Handler(*subtree)
+				return h.Handler.(GetHandler)(*h_subtree)
 			}
 		}
 	}
 	//recursive continuation
 	return varSearch(oid, handlers[1:], next)
+}
+
+// set handling ...............................................................
+func handleTestSet(c *Connection, h *Header, buf []byte) {
+
+	var m SetMessage
+	m.UnmarshalBinary(buf)
+
+	var r Response
+	r.Header.Version = 1
+	r.Header.Type = ResponsePDU
+	r.Header.Flags = h.Flags & NetworkByteOrder
+	r.Header.SessionId = c.sessionId
+	r.Header.TransactionId = h.TransactionId
+	r.Header.PacketId = h.PacketId
+	r.Header.PayloadLength = 8
+
+	for _, v := range m.VarBindList {
+
+		oid := v.Name.String()
+		handler, ok := c.testSetHandlers[oid]
+		if !ok {
+			r.Error = int16(TestSetResourceUnavailable)
+			break
+		} else {
+			handler(v)
+		}
+
+	}
+
+	sendMsg(&r, c)
+
 }

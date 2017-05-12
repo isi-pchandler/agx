@@ -197,6 +197,14 @@ func EndOfMibViewVarBind(oid Subtree) VarBind {
 	return v
 }
 
+func OctetStringVarBind(oid Subtree, s string) VarBind {
+	var v VarBind
+	v.Type = OctetStringT
+	v.Name = oid
+	v.Data = *NewOctetString(s)
+	return v
+}
+
 // VarBind
 
 type VarBind struct {
@@ -383,6 +391,9 @@ func (s Subtree) String() string {
 	str := strconv.Itoa(int(s.SubIdentifiers[0]))
 	for _, x := range s.SubIdentifiers[1:] {
 		str += "." + strconv.Itoa(int(x))
+	}
+	if s.Prefix != 0 {
+		str = fmt.Sprintf("1.3.6.1.%d.%s", s.Prefix, str)
 	}
 	return str
 }
@@ -676,7 +687,6 @@ func NewRegisterMessage(subtree string, context *string, upperBound *int32) (
 	}
 
 	return m, nil
-
 }
 
 func (m RegisterMessage) MarshalBinary() ([]byte, error) {
@@ -821,6 +831,60 @@ func (m *GetMessage) unmarshalBinary(buf []byte, padded bool) (int, error) {
 		m.SearchRangeList = append(m.SearchRangeList, t)
 	}
 
+	return i, nil
+}
+
+// set ........................................................................
+
+type TestSetResult int16
+
+const (
+	TestSetNoError             = TestSetResult(0)
+	TestSetGenError            = TestSetResult(5)
+	TestSetNoAccess            = TestSetResult(6)
+	TestSetWrongType           = TestSetResult(7)
+	TestSetWrongLength         = TestSetResult(8)
+	TestSetWrongEncoding       = TestSetResult(9)
+	TestSetWrongValue          = TestSetResult(10)
+	TestSetNoCreation          = TestSetResult(11)
+	TestSetInconsistentValue   = TestSetResult(12)
+	TestSetResourceUnavailable = TestSetResult(13)
+	TestSetNotWritable         = TestSetResult(17)
+	TestSetInconsistentName    = TestSetResult(18)
+)
+
+type SetMessage struct {
+	Header      Header
+	Context     *OctetString
+	VarBindList []VarBind
+}
+
+func (m *SetMessage) UnmarshalBinary(buf []byte) (int, error) {
+	i := 0
+	n, err := m.Header.UnmarshalBinary(buf)
+	if err != nil {
+		return i, nil
+	}
+	i += n
+
+	if (m.Header.Flags & NonDefaultContext) != 0 {
+		m.Context = &OctetString{}
+		n, err = m.Context.UnmarshalBinary(buf[i:])
+		if err != nil {
+			return i, nil
+		}
+		i += n
+	}
+
+	for i < int(m.Header.PayloadLength) {
+		var vb VarBind
+		n, err = vb.UnmarshalBinary(buf[i:])
+		if err != nil {
+			return i, nil
+		}
+		i += n
+		m.VarBindList = append(m.VarBindList, vb)
+	}
 	return i, nil
 }
 

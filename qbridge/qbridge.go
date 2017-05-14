@@ -52,6 +52,8 @@ const (
 	qvs_status           = qvs + ".5"
 )
 
+var qvs_subtree *agx.Subtree
+
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  *
  * System Constants
@@ -77,25 +79,13 @@ type VlanTableEntry struct {
 }
 type VlanTable map[int]*VlanTableEntry
 
-/*
-type QVSTableEntry struct {
-	VID    int
-	Egress []int
-	Access []int
-}
-*/
-type QVSTableEntry struct {
-	OID   string
-	Type  int
-	Value interface{}
-}
-type QVSTable []*QVSTableEntry
-
-var vtable QVSTable
+type QVSTable []*agx.VarBind
 
 func (t QVSTable) Len() int           { return len(t) }
 func (t QVSTable) Swap(i, j int)      { t[i], t[j] = t[j], t[i] }
-func (t QVSTable) Less(i, j int) bool { return t[i].OID < t[j].OID }
+func (t QVSTable) Less(i, j int) bool { return t[i].Name.LessThan(t[j].Name) }
+
+var qtable QVSTable
 
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  *
@@ -105,8 +95,9 @@ func (t QVSTable) Less(i, j int) bool { return t[i].OID < t[j].OID }
 
 func main() {
 
-	vtable = generateQVSTable()
-	log.Printf("len(vtable)=%d", len(vtable))
+	qvs_subtree, _ = agx.NewSubtree(qvs)
+
+	qtable = generateQVSTable()
 
 	id, descr := "1.2.3.4.7", "qbridge-agent"
 	c, err := agx.Connect(&id, &descr)
@@ -151,7 +142,7 @@ func main() {
 
 	c.OnGet(qb_numvlans, func(oid agx.Subtree) agx.VarBind {
 
-		table := fetchVlanTable()
+		table := generateVlanTable()
 		numvlans := uint32(len(table))
 		log.Printf("[qbridge][get] numvlans=%d", numvlans)
 		return agx.Gauge32VarBind(oid, numvlans)
@@ -169,53 +160,22 @@ func main() {
 
 	c.OnGetSubtree(qvs, func(oid agx.Subtree, next bool) agx.VarBind {
 
-		if len(vtable) == 0 {
+		if len(qtable) == 0 {
 			log.Printf("vlan table is empty")
 			return agx.EndOfMibViewVarBind(oid)
 		}
 
-		name := oid.String()
-		log.Printf("[qvs][get-subtree] oid=%s next=%v", name, next)
+		if oid.HasPrefix(*qvs_subtree) {
 
-		if strings.HasPrefix(name, qvs) {
-
-			entry := findEntry(name, next)
+			entry := findEntry(oid, next)
 			if entry == nil {
-				log.Printf("[q_static] no vlan table for %s next=%v", name, next)
 				return agx.EndOfMibViewVarBind(oid)
 			}
-
-			entry_type, _, err := parseOid(entry.OID)
-			if err != nil {
-				log.Print(err)
-				return agx.NoSuchObjectVarBind(oid)
-			}
-
-			if entry_type == qvs_name_suffix {
-				return agx.OctetStringVarBind(oid, fmt.Sprintf("vlan-%d", entry.Value.(int)))
-			}
-			if entry_type == qvs_egress_suffix {
-				log.Printf("returning egress %s", entry.OID)
-				subtree, err := agx.NewSubtree(entry.OID)
-				if err != nil {
-					log.Print(err)
-					return agx.NoSuchObjectVarBind(oid)
-				}
-				return agx.VarBind{
-					Type: agx.OctetStringT,
-					Name: *subtree,
-					Data: entry.Value,
-				}
-			}
+			return *entry
 
 		} else {
 			log.Printf("[qvs]top level requested - returning first vlan entry name")
-			entry_oid, _ := agx.NewSubtree(vtable[0].OID)
-			return agx.VarBind{
-				Type: agx.OctetStringT,
-				Name: *entry_oid,
-				Data: vtable[0].Value,
-			}
+			return *qtable[0]
 		}
 
 		return agx.EndOfMibViewVarBind(oid)
@@ -253,50 +213,36 @@ func parseOid(oid string) (int, int, error) {
 
 // Helpers ====================================================================
 
-func findEntry(oid string, next bool) *QVSTableEntry {
-	log.Printf("findEntry oid=%s next=%v", oid, next)
-	i := 0
-	for ; i < len(vtable) && oid > vtable[i].OID; i++ {
-	}
-	log.Printf("findEntry idx=%d", i)
-	log.Printf("len(vtable)=%d", len(vtable))
+func findEntry(oid agx.Subtree, next bool) *agx.VarBind {
 
-	if i == len(vtable) {
+	//binary search for the variable we are looking for
+	//it's the smallest value greater than the target oid
+	i := sort.Search(
+		len(qtable),
+		func(i int) bool { return qtable[i].Name.GreaterThanEq(oid) },
+	)
+	log.Printf("findEntry idx=%d", i)
+
+	//binary search found nothing
+	if i == -1 {
+		log.Printf("findEntry oid=%s next=%v not found", oid.String(), next)
 		return nil
 	}
 	if !next {
-		log.Printf("findEntry returning next=%s", vtable[i].OID)
-		return vtable[i]
+		log.Printf("findEntry returning next=%s", qtable[i].Name.String())
+		return qtable[i]
 	}
-	if i < len(vtable)-1 {
-		log.Printf("findEntry returning next=%s", vtable[i+1].OID)
-		return vtable[i+1]
+	if i < len(qtable)-1 {
+		log.Printf("findEntry returning next=%s", qtable[i+1].Name.String())
+		return qtable[i+1]
 	}
 
-	log.Printf("findEntry no love")
+	log.Printf("findEntry oid=%s next=%v i=%d not found", oid.String(), next, i)
 	return nil
-
-	/*
-		idx :=
-			sort.Search(len(vtable), func(i int) bool { return vtable[i].OID >= oid })
-		if idx >= 0 {
-			if next {
-				if idx < len(vtable)-1 {
-					return vtable[idx+1]
-				} else {
-					return nil
-				}
-			} else {
-				return vtable[idx]
-			}
-		} else {
-			return nil
-		}
-	*/
 }
 
-//XXX
-func fetchVlanTable() VlanTable {
+//Genertes a table keyed by vlan number
+func generateVlanTable() VlanTable {
 	bridges, _ := netlink.GetBridgeInfo()
 	table := make(VlanTable)
 	for _, bridge := range bridges {
@@ -317,62 +263,68 @@ func fetchVlanTable() VlanTable {
 	return table
 }
 
+//Generates the 'Vlan Static' Table
 func generateQVSTable() QVSTable {
-	table := make(map[string]*QVSTableEntry)
+	table := make(map[string]*agx.VarBind)
 
 	bridges, _ := netlink.GetBridgeInfo()
 	for bridge_index, bridge := range bridges {
 		for _, vlan := range bridge.Vlans {
 
 			name_oid := fmt.Sprintf("%s.%d", qvs_name, vlan.Vid)
+			name_subtree, _ := agx.NewSubtree(name_oid)
+
 			egress_oid := fmt.Sprintf("%s.%d", qvs_egress, vlan.Vid)
-			access_oid := fmt.Sprintf("%s.%d", qvs_untagged, vlan.Vid)
+			egress_subtree, _ := agx.NewSubtree(egress_oid)
 
-			entry := &QVSTableEntry{}
+			/*
+				access_oid := fmt.Sprintf("%s.%d", qvs_untagged, vlan.Vid)
+				access_subtree, _ := agx.NewSubtree(access_oid)
+			*/
 
-			entry.OID = name_oid
-			entry.Value = *agx.NewOctetString(fmt.Sprintf("v%d", vlan.Vid))
-			entry.Type = agx.OctetStringT
+			entry := &agx.VarBind{
+				Type: agx.OctetStringT,
+				Name: *name_subtree,
+				Data: *agx.NewOctetString([]byte(fmt.Sprintf("v%d", vlan.Vid))),
+			}
 			table[name_oid] = entry
 
 			if vlan.Untagged {
 				entry, ok := table[egress_oid]
+				length := int(math.Ceil(float64(len(bridges)) / 8))
+				value := agx.NewOctetString(make([]byte, length))
+				SetPort(bridge_index, value.Octets[:])
 				if !ok {
-					entry := &QVSTableEntry{}
-					entry.OID = egress_oid
-					length := int(math.Ceil(float64(len(bridges)) / 8))
-					value := agx.OctetString{
-						OctetStringLength: int32(length),
-						Octets:            make([]byte, length),
-					}
-					SetPort(bridge_index, value.Octets[:])
-					value.Pad()
-					entry.Value = value
-					entry.Type = agx.OctetStringT
+					/*
+						entry := &agx.VarBind{
+							Type: agx.OctetStringT,
+							Name: *egress_subtree,
+							Data: *value,
+						}
+					*/
+					entry := agx.OctetStringVarBind(*egress_subtree, make([]byte, length))
 					table[egress_oid] = entry
 					log.Printf("egress + %s", egress_oid)
 				} else {
-					SetPort(bridge_index, entry.Value.(agx.OctetString).Octets[:])
+					SetPort(bridge_index, entry.Data.(agx.OctetString).Octets[:])
 				}
-			} else {
+			} /*else {
 				entry, ok := table[access_oid]
 				if !ok {
-					entry := &QVSTableEntry{}
-					entry.OID = egress_oid
 					length := int(math.Ceil(float64(len(bridges)) / 8))
-					value := agx.OctetString{
-						OctetStringLength: int32(length),
-						Octets:            make([]byte, length),
-					}
+					value := agx.NewOctetString(make([]byte, length))
 					SetPort(bridge_index, value.Octets[:])
-					entry.Value = value
-					entry.Type = agx.OctetStringT
+					entry := &QVSTableEntry{
+						OID:   access_oid,
+						Value: *value,
+						Type:  agx.OctetStringT,
+					}
 					table[access_oid] = entry
 					log.Printf("access + %s", egress_oid)
 				} else {
 					SetPort(bridge_index, entry.Value.(agx.OctetString).Octets[:])
 				}
-			}
+			}*/
 		}
 	}
 
@@ -384,7 +336,7 @@ func generateQVSTable() QVSTable {
 	sort.Sort(ordered_table)
 
 	for _, e := range ordered_table {
-		log.Printf("==>%s = %v", e.OID, e.Value)
+		log.Printf("==>%s = %v", e.Name.String(), e)
 	}
 	return ordered_table
 }

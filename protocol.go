@@ -197,12 +197,12 @@ func EndOfMibViewVarBind(oid Subtree) VarBind {
 	return v
 }
 
-func OctetStringVarBind(oid Subtree, s string) VarBind {
-	var v VarBind
-	v.Type = OctetStringT
-	v.Name = oid
-	v.Data = *NewOctetString(s)
-	return v
+func OctetStringVarBind(oid Subtree, s []byte) *VarBind {
+	return &VarBind{
+		Type: OctetStringT,
+		Name: oid,
+		Data: *NewOctetString([]byte(s)),
+	}
 }
 
 // VarBind
@@ -367,6 +367,31 @@ type Subtree struct {
 	SubIdentifiers                 []int32
 }
 
+func (s Subtree) HasPrefix(p Subtree) bool {
+	//TODO can be more efficient without string conv
+	return strings.HasPrefix(s.String(), p.String())
+}
+
+func (s Subtree) GreaterThan(x Subtree) bool {
+	//TODO can be more efficient without string conv
+	return s.String() > x.String()
+}
+
+func (s Subtree) GreaterThanEq(x Subtree) bool {
+	//TODO can be more efficient without string conv
+	return s.String() >= x.String()
+}
+
+func (s Subtree) LessThan(x Subtree) bool {
+	//TODO can be more efficient without string conv
+	return s.String() < x.String()
+}
+
+func (s Subtree) LessThanEq(x Subtree) bool {
+	//TODO can be more efficient without string conv
+	return s.String() <= x.String()
+}
+
 func (s Subtree) WireSize() int {
 	return 4 + len(s.SubIdentifiers)*4
 }
@@ -439,11 +464,10 @@ type OctetString struct {
 	Octets            []byte
 }
 
-func NewOctetString(s string) *OctetString {
+func NewOctetString(s []byte) *OctetString {
 	os := &OctetString{}
-	bs := []byte(s)
-	os.OctetStringLength = int32(len(bs))
-	os.Octets = bs
+	os.OctetStringLength = int32(len(s))
+	os.Octets = s
 	os.Pad()
 	return os
 }
@@ -667,7 +691,7 @@ func NewRegisterMessage(subtree string, context *string, upperBound *int32) (
 
 	//context
 	if context != nil {
-		m.Context = NewOctetString(*context)
+		m.Context = NewOctetString([]byte(*context))
 		m.Header.PayloadLength += 4 + int32(len(m.Context.Octets))
 	}
 

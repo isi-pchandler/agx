@@ -105,7 +105,8 @@ func (t QVSTable) Less(i, j int) bool { return t[i].OID < t[j].OID }
 
 func main() {
 
-	vtable := generateQVSTable()
+	vtable = generateQVSTable()
+	log.Printf("len(vtable)=%d", len(vtable))
 
 	id, descr := "1.2.3.4.7", "qbridge-agent"
 	c, err := agx.Connect(&id, &descr)
@@ -178,27 +179,43 @@ func main() {
 
 		if strings.HasPrefix(name, qvs) {
 
-			entry_type, entry_num, err := parseOid(name)
 			entry := findEntry(name, next)
+			if entry == nil {
+				log.Printf("[q_static] no vlan table for %s next=%v", name, next)
+				return agx.EndOfMibViewVarBind(oid)
+			}
+
+			entry_type, _, err := parseOid(entry.OID)
 			if err != nil {
 				log.Print(err)
 				return agx.NoSuchObjectVarBind(oid)
 			}
 
-			if entry == nil {
-				log.Printf("[q_static] no vlan table for %d next=%v", entry_num, next)
-				return agx.EndOfMibViewVarBind(oid)
-			}
-
 			if entry_type == qvs_name_suffix {
 				return agx.OctetStringVarBind(oid, fmt.Sprintf("vlan-%d", entry.Value.(int)))
+			}
+			if entry_type == qvs_egress_suffix {
+				log.Printf("returning egress %s", entry.OID)
+				subtree, err := agx.NewSubtree(entry.OID)
+				if err != nil {
+					log.Print(err)
+					return agx.NoSuchObjectVarBind(oid)
+				}
+				return agx.VarBind{
+					Type: agx.OctetStringT,
+					Name: *subtree,
+					Data: entry.Value,
+				}
 			}
 
 		} else {
 			log.Printf("[qvs]top level requested - returning first vlan entry name")
-			entry_name := fmt.Sprintf("", string(vtable[0].Value.(agx.OctetString).Octets))
 			entry_oid, _ := agx.NewSubtree(vtable[0].OID)
-			return agx.OctetStringVarBind(*entry_oid, entry_name)
+			return agx.VarBind{
+				Type: agx.OctetStringT,
+				Name: *entry_oid,
+				Data: vtable[0].Value,
+			}
 		}
 
 		return agx.EndOfMibViewVarBind(oid)
@@ -237,21 +254,45 @@ func parseOid(oid string) (int, int, error) {
 // Helpers ====================================================================
 
 func findEntry(oid string, next bool) *QVSTableEntry {
-	idx :=
-		sort.Search(len(vtable), func(i int) bool { return vtable[i].OID >= oid })
-	if idx >= 0 {
-		if next {
-			if idx < len(vtable)-1 {
-				return vtable[idx+1]
-			} else {
-				return nil
-			}
-		} else {
-			return vtable[idx]
-		}
-	} else {
+	log.Printf("findEntry oid=%s next=%v", oid, next)
+	i := 0
+	for ; i < len(vtable) && oid > vtable[i].OID; i++ {
+	}
+	log.Printf("findEntry idx=%d", i)
+	log.Printf("len(vtable)=%d", len(vtable))
+
+	if i == len(vtable) {
 		return nil
 	}
+	if !next {
+		log.Printf("findEntry returning next=%s", vtable[i].OID)
+		return vtable[i]
+	}
+	if i < len(vtable)-1 {
+		log.Printf("findEntry returning next=%s", vtable[i+1].OID)
+		return vtable[i+1]
+	}
+
+	log.Printf("findEntry no love")
+	return nil
+
+	/*
+		idx :=
+			sort.Search(len(vtable), func(i int) bool { return vtable[i].OID >= oid })
+		if idx >= 0 {
+			if next {
+				if idx < len(vtable)-1 {
+					return vtable[idx+1]
+				} else {
+					return nil
+				}
+			} else {
+				return vtable[idx]
+			}
+		} else {
+			return nil
+		}
+	*/
 }
 
 //XXX
@@ -305,9 +346,11 @@ func generateQVSTable() QVSTable {
 						Octets:            make([]byte, length),
 					}
 					SetPort(bridge_index, value.Octets[:])
+					value.Pad()
 					entry.Value = value
 					entry.Type = agx.OctetStringT
 					table[egress_oid] = entry
+					log.Printf("egress + %s", egress_oid)
 				} else {
 					SetPort(bridge_index, entry.Value.(agx.OctetString).Octets[:])
 				}
@@ -325,6 +368,7 @@ func generateQVSTable() QVSTable {
 					entry.Value = value
 					entry.Type = agx.OctetStringT
 					table[access_oid] = entry
+					log.Printf("access + %s", egress_oid)
 				} else {
 					SetPort(bridge_index, entry.Value.(agx.OctetString).Octets[:])
 				}
@@ -338,6 +382,10 @@ func generateQVSTable() QVSTable {
 	}
 
 	sort.Sort(ordered_table)
+
+	for _, e := range ordered_table {
+		log.Printf("==>%s = %v", e.OID, e.Value)
+	}
 	return ordered_table
 }
 

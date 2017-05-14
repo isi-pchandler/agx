@@ -304,6 +304,7 @@ func doHandleGet(c *Connection, h *Header, buf []byte, next bool) {
 
 	for _, x := range g.SearchRangeList {
 		vb := c.getNextVarBind(x.String(), next)
+		log.Printf("out: %s", vb.Name.String())
 		r.VarBindList = append(r.VarBindList, vb)
 		r.Header.PayloadLength += int32(vb.WireSize())
 	}
@@ -368,7 +369,7 @@ func (c *Connection) getNextVarBind(oid string, next bool) VarBind {
 // instance. In the case that next is false, it binds to the first matching oid
 // it finds, otherwise it binds to the following oid.
 func varSearch(oid string, handlers []HandlerBundle, next bool) VarBind {
-	log.Printf("[var-search] oid=%s next=%v", oid, next)
+	//log.Printf("[var-search] oid=%s next=%v", oid, next)
 	subtree, _ := NewSubtree(oid)
 	if len(handlers) == 0 {
 		return EndOfMibViewVarBind(*subtree)

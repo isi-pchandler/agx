@@ -221,7 +221,6 @@ func findEntry(oid agx.Subtree, next bool) *agx.VarBind {
 		len(qtable),
 		func(i int) bool { return qtable[i].Name.GreaterThanEq(oid) },
 	)
-	log.Printf("findEntry idx=%d", i)
 
 	//binary search found nothing
 	if i == -1 {
@@ -268,71 +267,53 @@ func generateQVSTable() QVSTable {
 	table := make(map[string]*agx.VarBind)
 
 	bridges, _ := netlink.GetBridgeInfo()
+	vtable_length := int(math.Ceil(float64(len(bridges)) / 8))
 	for bridge_index, bridge := range bridges {
 		for _, vlan := range bridge.Vlans {
 
-			name_oid := fmt.Sprintf("%s.%d", qvs_name, vlan.Vid)
-			name_subtree, _ := agx.NewSubtree(name_oid)
+			//generate the name, egress and access oid tags for the current vlan
+			name_tag := fmt.Sprintf("%s.%d", qvs_name, vlan.Vid)
+			name_oid, _ := agx.NewSubtree(name_tag)
 
-			egress_oid := fmt.Sprintf("%s.%d", qvs_egress, vlan.Vid)
-			egress_subtree, _ := agx.NewSubtree(egress_oid)
+			egress_tag := fmt.Sprintf("%s.%d", qvs_egress, vlan.Vid)
+			egress_oid, _ := agx.NewSubtree(egress_tag)
 
-			/*
-				access_oid := fmt.Sprintf("%s.%d", qvs_untagged, vlan.Vid)
-				access_subtree, _ := agx.NewSubtree(access_oid)
-			*/
+			access_tag := fmt.Sprintf("%s.%d", qvs_untagged, vlan.Vid)
+			access_oid, _ := agx.NewSubtree(access_tag)
 
+			//each vlan gets a name
 			entry := &agx.VarBind{
 				Type: agx.OctetStringT,
-				Name: *name_subtree,
+				Name: *name_oid,
 				Data: *agx.NewOctetString([]byte(fmt.Sprintf("v%d", vlan.Vid))),
 			}
-			table[name_oid] = entry
+			table[name_tag] = entry
 
+			//set the egress and access tables for each vlan
 			if vlan.Untagged {
-				entry, ok := table[egress_oid]
-				length := int(math.Ceil(float64(len(bridges)) / 8))
-				value := agx.NewOctetString(make([]byte, length))
-				SetPort(bridge_index, value.Octets[:])
+				entry, ok := table[egress_tag]
 				if !ok {
-					/*
-						entry := &agx.VarBind{
-							Type: agx.OctetStringT,
-							Name: *egress_subtree,
-							Data: *value,
-						}
-					*/
-					entry := agx.OctetStringVarBind(*egress_subtree, make([]byte, length))
-					table[egress_oid] = entry
-					log.Printf("egress + %s", egress_oid)
+					entry = agx.OctetStringVarBind(*egress_oid, make([]byte, vtable_length))
+					table[egress_tag] = entry
+				}
+				SetPort(bridge_index, entry.Data.(agx.OctetString).Octets[:])
+			} else {
+				entry, ok := table[access_tag]
+				if !ok {
+					entry = agx.OctetStringVarBind(*access_oid, make([]byte, vtable_length))
+					table[access_tag] = entry
 				} else {
 					SetPort(bridge_index, entry.Data.(agx.OctetString).Octets[:])
 				}
-			} /*else {
-				entry, ok := table[access_oid]
-				if !ok {
-					length := int(math.Ceil(float64(len(bridges)) / 8))
-					value := agx.NewOctetString(make([]byte, length))
-					SetPort(bridge_index, value.Octets[:])
-					entry := &QVSTableEntry{
-						OID:   access_oid,
-						Value: *value,
-						Type:  agx.OctetStringT,
-					}
-					table[access_oid] = entry
-					log.Printf("access + %s", egress_oid)
-				} else {
-					SetPort(bridge_index, entry.Value.(agx.OctetString).Octets[:])
-				}
-			}*/
+			}
 		}
 	}
 
+	//translate the unordered table created above into an ordered_table
 	ordered_table := make(QVSTable, 0, len(table))
 	for _, e := range table {
 		ordered_table = append(ordered_table, e)
 	}
-
 	sort.Sort(ordered_table)
 
 	for _, e := range ordered_table {

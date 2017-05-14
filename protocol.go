@@ -201,7 +201,7 @@ func OctetStringVarBind(oid Subtree, s []byte) *VarBind {
 	return &VarBind{
 		Type: OctetStringT,
 		Name: oid,
-		Data: *NewOctetString([]byte(s)),
+		Data: *NewOctetString(s),
 	}
 }
 
@@ -465,9 +465,12 @@ type OctetString struct {
 }
 
 func NewOctetString(s []byte) *OctetString {
-	os := &OctetString{}
-	os.OctetStringLength = int32(len(s))
-	os.Octets = s
+	os := &OctetString{
+		OctetStringLength: int32(len(s)),
+	}
+	//copy to be sure
+	os.Octets = make([]byte, len(s))
+	copy(os.Octets, s)
 	os.Pad()
 	return os
 }

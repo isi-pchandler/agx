@@ -281,12 +281,10 @@ func handleGet(c *Connection, h *Header, buf []byte) {
 }
 
 func handleGetNext(c *Connection, h *Header, buf []byte) {
-	log.Printf("[handle-get-next] PACKET=%d", h.PacketId)
 	doHandleGet(c, h, buf, true)
 }
 
 func doHandleGet(c *Connection, h *Header, buf []byte, next bool) {
-	log.Printf("[getnext]")
 	g := &GetNextMessage{}
 	_, err := g.UnmarshalBinary(buf)
 	if err != nil {
@@ -377,7 +375,6 @@ func varSearch(oid string, handlers []HandlerBundle, next bool) VarBind {
 	h := handlers[0]
 	h_subtree, _ := NewSubtree(h.Oid)
 	if h.Type == GetSubtreeHandlerType {
-		log.Printf("subtree@ %s %s next=%v", oid, h.Oid, next)
 		//truncate the target oid to the prefix length of the handler, if the handler
 		//comes at or after the truncation it should be executed
 		if h.Oid >= oid[:len(h.Oid)] {

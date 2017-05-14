@@ -412,15 +412,20 @@ func handleTestSet(c *Connection, h *Header, buf []byte) {
 	var m SetMessage
 	m.UnmarshalBinary(buf)
 
-	var r Response
-	r.Header.Version = 1
-	r.Header.Type = ResponsePDU
-	r.Header.Flags = h.Flags & NetworkByteOrder
-	r.Header.SessionId = c.sessionId
-	r.Header.TransactionId = h.TransactionId
-	r.Header.PacketId = h.PacketId
-	r.Header.PayloadLength = 8
-	r.ResponsePayload.Error = int16(TestSetResourceUnavailable)
+	r := Response{
+		Header: Header{
+			Version:       1,
+			Type:          ResponsePDU,
+			Flags:         h.Flags & NetworkByteOrder,
+			SessionId:     c.sessionId,
+			TransactionId: h.TransactionId,
+			PacketId:      h.PacketId,
+			PayloadLength: 8,
+		},
+		ResponsePayload: ResponsePayload{
+			Error: int16(TestSetResourceUnavailable),
+		},
+	}
 
 	hbs := make(HandlerBundles, 0, len(c.testSetHandlers))
 	for name, h := range c.testSetHandlers {
@@ -450,15 +455,20 @@ func handleCommitSet(c *Connection, h *Header, buf []byte) {
 
 	log.Printf("[commit-set]")
 
-	var r Response
-	r.Header.Version = 1
-	r.Header.Type = ResponsePDU
-	r.Header.Flags = h.Flags & NetworkByteOrder
-	r.Header.SessionId = c.sessionId
-	r.Header.TransactionId = h.TransactionId
-	r.Header.PacketId = h.PacketId
-	r.Header.PayloadLength = 8
-	r.ResponsePayload.Error = int16(CommitSetNoError)
+	r := Response{
+		Header: Header{
+			Version:       1,
+			Type:          ResponsePDU,
+			Flags:         h.Flags & NetworkByteOrder,
+			SessionId:     c.sessionId,
+			TransactionId: h.TransactionId,
+			PacketId:      h.PacketId,
+			PayloadLength: 8,
+		},
+		ResponsePayload: ResponsePayload{
+			Error: int16(CommitSetNoError),
+		},
+	}
 	sendMsg(&r, c)
 
 }
@@ -466,18 +476,5 @@ func handleCommitSet(c *Connection, h *Header, buf []byte) {
 func handleCleanupSet(c *Connection, h *Header, buf []byte) {
 
 	log.Printf("[cleanup-set] trans=%d", h.TransactionId)
-
-	/*
-		var r Response
-		r.Header.Version = 1
-		r.Header.Type = ResponsePDU
-		r.Header.Flags = h.Flags & NetworkByteOrder
-		r.Header.SessionId = c.sessionId
-		r.Header.TransactionId = h.TransactionId
-		r.Header.PacketId = h.PacketId
-		r.Header.PayloadLength = 8
-		r.ResponsePayload.Error = 0
-		sendMsg(&r, c)
-	*/
 
 }

@@ -179,7 +179,20 @@ func main() {
 
 	c.OnTestSet(qvs, func(vb agx.VarBind) agx.TestSetResult {
 
-		log.Printf("[q_static][test-set] oid::%s", vb.Name.String())
+		log.Printf("[test-set] oid::%s", vb.Name.String())
+
+		table, vid, err := parseOid(vb.Name.String())
+		if err != nil {
+			log.Printf("[test-set] error parsing oid=%s", vb.Name.String())
+			return agx.TestSetGenError
+		}
+
+		if table == qvs_egress_suffix {
+			log.Printf("[test-set] egress vid=%d", vid)
+		} else if table == qvs_untagged_suffix {
+			log.Printf("[test-set] access vid=%d", vid)
+		}
+
 		return agx.TestSetNoError
 
 	})

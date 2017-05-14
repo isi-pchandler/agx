@@ -52,8 +52,6 @@ const (
 	qvs_status           = qvs + ".5"
 )
 
-var qvs_subtree *agx.Subtree
-
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  *
  * System Constants
@@ -95,7 +93,7 @@ var qtable QVSTable
 
 func main() {
 
-	qvs_subtree, _ = agx.NewSubtree(qvs)
+	qvs_subtree, _ := agx.NewSubtree(qvs)
 
 	qtable = generateQVSTable()
 
@@ -166,25 +164,24 @@ func main() {
 		}
 
 		if oid.HasPrefix(*qvs_subtree) {
-
 			entry := findEntry(oid, next)
 			if entry == nil {
 				return agx.EndOfMibViewVarBind(oid)
+			} else {
+				return *entry
 			}
-			return *entry
-
 		} else {
 			log.Printf("[qvs]top level requested - returning first vlan entry name")
 			return *qtable[0]
 		}
 
-		return agx.EndOfMibViewVarBind(oid)
-
 	})
 
-	c.OnTestSet(q_static, func(vb agx.VarBind) agx.TestSetResult {
+	c.OnTestSet(qvs, func(vb agx.VarBind) agx.TestSetResult {
+
 		log.Printf("[q_static][test-set] oid::%s", vb.Name.String())
 		return agx.TestSetNoError
+
 	})
 
 	//wait for connection to close

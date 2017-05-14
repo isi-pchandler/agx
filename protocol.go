@@ -880,6 +880,13 @@ const (
 	TestSetInconsistentName    = TestSetResult(18)
 )
 
+type CommitSetResult int16
+
+const (
+	CommitSetNoError      = CommitSetResult(0)
+	CommitSetCommitFailed = CommitSetResult(14)
+)
+
 type SetMessage struct {
 	Header      Header
 	Context     *OctetString

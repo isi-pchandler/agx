@@ -12,6 +12,7 @@ import (
 	"log"
 	"net"
 	"sort"
+	"strings"
 )
 
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -224,8 +225,12 @@ func rootMessageHandler(c *Connection) {
 			handleGetNext(c, hdr, buf)
 		case TestSetPDU:
 			handleTestSet(c, hdr, buf)
+		case CommitSetPDU:
+			handleCommitSet(c, hdr, buf)
+		case CleanupSetPDU:
+			handleCleanupSet(c, hdr, buf)
 		default:
-			log.Printf("[roogMH] unknown message")
+			log.Printf("[roogMH] unknown message type %d", hdr.Type)
 		}
 	}
 }
@@ -314,6 +319,7 @@ type HandlerType int
 const (
 	GetHandlerType        = 1
 	GetSubtreeHandlerType = 2
+	TestSetHandlerType    = 3
 )
 
 type HandlerBundle struct {
@@ -401,6 +407,8 @@ func varSearch(oid string, handlers []HandlerBundle, next bool) VarBind {
 // set handling ...............................................................
 func handleTestSet(c *Connection, h *Header, buf []byte) {
 
+	log.Printf("[test-set]")
+
 	var m SetMessage
 	m.UnmarshalBinary(buf)
 
@@ -412,20 +420,64 @@ func handleTestSet(c *Connection, h *Header, buf []byte) {
 	r.Header.TransactionId = h.TransactionId
 	r.Header.PacketId = h.PacketId
 	r.Header.PayloadLength = 8
+	r.ResponsePayload.Error = int16(TestSetResourceUnavailable)
+
+	hbs := make(HandlerBundles, 0, len(c.testSetHandlers))
+	for name, h := range c.testSetHandlers {
+		hbs = append(hbs, HandlerBundle{
+			Oid:     name,
+			Type:    TestSetHandlerType,
+			Handler: h,
+		})
+	}
+	sort.Sort(hbs)
 
 	for _, v := range m.VarBindList {
 
-		oid := v.Name.String()
-		handler, ok := c.testSetHandlers[oid]
-		if !ok {
-			r.Error = int16(TestSetResourceUnavailable)
-			break
-		} else {
-			handler(v)
+		for _, h := range hbs {
+			if strings.HasPrefix(v.Name.String(), h.Oid) {
+				r.ResponsePayload.Error = int16(h.Handler.(TestSetHandler)(v))
+			}
 		}
 
 	}
 
 	sendMsg(&r, c)
+
+}
+
+func handleCommitSet(c *Connection, h *Header, buf []byte) {
+
+	log.Printf("[commit-set]")
+
+	var r Response
+	r.Header.Version = 1
+	r.Header.Type = ResponsePDU
+	r.Header.Flags = h.Flags & NetworkByteOrder
+	r.Header.SessionId = c.sessionId
+	r.Header.TransactionId = h.TransactionId
+	r.Header.PacketId = h.PacketId
+	r.Header.PayloadLength = 8
+	r.ResponsePayload.Error = int16(CommitSetNoError)
+	sendMsg(&r, c)
+
+}
+
+func handleCleanupSet(c *Connection, h *Header, buf []byte) {
+
+	log.Printf("[cleanup-set] trans=%d", h.TransactionId)
+
+	/*
+		var r Response
+		r.Header.Version = 1
+		r.Header.Type = ResponsePDU
+		r.Header.Flags = h.Flags & NetworkByteOrder
+		r.Header.SessionId = c.sessionId
+		r.Header.TransactionId = h.TransactionId
+		r.Header.PacketId = h.PacketId
+		r.Header.PayloadLength = 8
+		r.ResponsePayload.Error = 0
+		sendMsg(&r, c)
+	*/
 
 }

@@ -289,22 +289,26 @@ func generateQVSTable() QVSTable {
 			}
 			table[name_tag] = entry
 
+			//ensure the vlan has access and egress tables
+			ok := false
+			entry, ok = table[egress_tag]
+			if !ok {
+				entry = agx.OctetStringVarBind(*egress_oid, make([]byte, vtable_length))
+				table[egress_tag] = entry
+			}
+			entry, ok = table[access_tag]
+			if !ok {
+				entry = agx.OctetStringVarBind(*access_oid, make([]byte, vtable_length))
+				table[access_tag] = entry
+			}
+
 			//set the egress and access tables for each vlan
 			if vlan.Untagged {
-				entry, ok := table[egress_tag]
-				if !ok {
-					entry = agx.OctetStringVarBind(*egress_oid, make([]byte, vtable_length))
-					table[egress_tag] = entry
-				}
+				entry, _ = table[egress_tag]
 				SetPort(bridge_index, entry.Data.(agx.OctetString).Octets[:])
 			} else {
-				entry, ok := table[access_tag]
-				if !ok {
-					entry = agx.OctetStringVarBind(*access_oid, make([]byte, vtable_length))
-					table[access_tag] = entry
-				} else {
-					SetPort(bridge_index, entry.Data.(agx.OctetString).Octets[:])
-				}
+				entry, _ = table[access_tag]
+				SetPort(bridge_index, entry.Data.(agx.OctetString).Octets[:])
 			}
 		}
 	}

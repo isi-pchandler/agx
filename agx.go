@@ -27,6 +27,8 @@ type Connection struct {
 	getHandlers        map[string]GetHandler
 	getSubtreeHandlers map[string]GetSubtreeHandler
 	testSetHandlers    map[string]TestSetHandler
+	commitSetHandler   CommitSetHandler
+	cleanupSetHandler  CleanupSetHandler
 
 	//public members
 	Closed chan bool
@@ -134,7 +136,9 @@ func (c *Connection) doRegister(oid string, unregister bool) error {
  *----------------------------------------------------------------------------*/
 type GetHandler func(oid Subtree) VarBind
 type GetSubtreeHandler func(oid Subtree, next bool) VarBind
-type TestSetHandler func(vars VarBind) TestSetResult
+type TestSetHandler func(vars VarBind, sessionId int) TestSetResult
+type CommitSetHandler func(sessionId int) CommitSetResult
+type CleanupSetHandler func(sessionId int)
 
 func (c *Connection) OnGet(oid string, f GetHandler) {
 	c.getHandlers[oid] = f
@@ -146,6 +150,14 @@ func (c *Connection) OnGetSubtree(oid string, f GetSubtreeHandler) {
 
 func (c *Connection) OnTestSet(oid string, f TestSetHandler) {
 	c.testSetHandlers[oid] = f
+}
+
+func (c *Connection) OnCommitSet(f CommitSetHandler) {
+	c.commitSetHandler = f
+}
+
+func (c *Connection) OnCleanupSet(f CleanupSetHandler) {
+	c.cleanupSetHandler = f
 }
 
 // helper functions ===========================================================
@@ -407,8 +419,6 @@ func varSearch(oid string, handlers []HandlerBundle, next bool) VarBind {
 // set handling ...............................................................
 func handleTestSet(c *Connection, h *Header, buf []byte) {
 
-	log.Printf("[test-set]")
-
 	var m SetMessage
 	m.UnmarshalBinary(buf)
 
@@ -441,7 +451,7 @@ func handleTestSet(c *Connection, h *Header, buf []byte) {
 
 		for _, h := range hbs {
 			if strings.HasPrefix(v.Name.String(), h.Oid) {
-				r.ResponsePayload.Error = int16(h.Handler.(TestSetHandler)(v))
+				r.ResponsePayload.Error = int16(h.Handler.(TestSetHandler)(v, int(c.sessionId)))
 			}
 		}
 
@@ -453,7 +463,7 @@ func handleTestSet(c *Connection, h *Header, buf []byte) {
 
 func handleCommitSet(c *Connection, h *Header, buf []byte) {
 
-	log.Printf("[commit-set]")
+	result := c.commitSetHandler(int(h.SessionId))
 
 	r := Response{
 		Header: Header{
@@ -466,15 +476,16 @@ func handleCommitSet(c *Connection, h *Header, buf []byte) {
 			PayloadLength: 8,
 		},
 		ResponsePayload: ResponsePayload{
-			Error: int16(CommitSetNoError),
+			Error: int16(result),
 		},
 	}
+
 	sendMsg(&r, c)
 
 }
 
 func handleCleanupSet(c *Connection, h *Header, buf []byte) {
 
-	log.Printf("[cleanup-set] trans=%d", h.TransactionId)
+	c.cleanupSetHandler(int(h.SessionId))
 
 }

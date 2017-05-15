@@ -177,9 +177,9 @@ func main() {
 
 	})
 
-	c.OnTestSet(qvs, func(vb agx.VarBind) agx.TestSetResult {
+	c.OnTestSet(qvs, func(vb agx.VarBind, sessionId int) agx.TestSetResult {
 
-		log.Printf("[test-set] oid::%s", vb.Name.String())
+		log.Printf("[test-set] oid::%s session=%d", vb.Name.String(), sessionId)
 
 		table, vid, err := parseOid(vb.Name.String())
 		if err != nil {
@@ -194,6 +194,20 @@ func main() {
 		}
 
 		return agx.TestSetNoError
+
+	})
+
+	c.OnCommitSet(func(sessionId int) agx.CommitSetResult {
+
+		log.Printf("[commit-set] session=%d", sessionId)
+
+		return agx.CommitSetNoError
+
+	})
+
+	c.OnCleanupSet(func(sessionId int) {
+
+		log.Printf("[cleanup-set] session=%d", sessionId)
 
 	})
 

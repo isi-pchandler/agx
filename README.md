@@ -33,6 +33,23 @@ func main() {
 		return v
 
 	})
+	c.OnTestSet(qvs, func(vb agx.VarBind, sessionId int) agx.TestSetResult {
+
+		log.Printf("[test-set] oid::%s session=%d", vb.Name.String(), sessionId)
+		
+		//do something to test whether the set operation is valid for your device here
+		
+		return agx.TestSetNoError
+	}
+	c.OnCommitSet(func(sessionId int) agx.CommitSetResult {
+
+		log.Printf("[commit-set] session=%d", sessionId)
+		
+		//do something to implement the set here
+
+		return agx.CommitSetNoError
+
+	})
 
 	//wait for connection to close
 	<-c.Closed

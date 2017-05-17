@@ -84,6 +84,7 @@ func (t QVSTable) Swap(i, j int)      { t[i], t[j] = t[j], t[i] }
 func (t QVSTable) Less(i, j int) bool { return t[i].Name.LessThan(t[j].Name) }
 
 var qtable QVSTable
+var swptable []int
 
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  *
@@ -96,6 +97,7 @@ func main() {
 	qvs_subtree, _ := agx.NewSubtree(qvs)
 
 	qtable = generateQVSTable()
+	swptable = generateSWPTable()
 
 	id, descr := "1.2.3.4.7", "qbridge-agent"
 	c, err := agx.Connect(&id, &descr)
@@ -188,9 +190,37 @@ func main() {
 		}
 
 		if table == qvs_egress_suffix {
+
 			log.Printf("[test-set] egress vid=%d", vid)
+			s, ok := vb.Data.(agx.OctetString)
+			if !ok {
+				log.Printf(
+					"[test-set] error setting egress: varbind must be an octet string")
+				return agx.TestSetWrongType
+			}
+			log.Printf("setting egress = %v", s)
+			err = setVlans(vid, s, false)
+			if err != nil {
+				log.Printf("error setting egress vlans: %v", err)
+				return agx.TestSetGenError
+			}
+
 		} else if table == qvs_untagged_suffix {
+
 			log.Printf("[test-set] access vid=%d", vid)
+			s, ok := vb.Data.(agx.OctetString)
+			if !ok {
+				log.Printf(
+					"[test-set] error setting access: varbind must be an octet string")
+				return agx.TestSetWrongType
+			}
+			log.Printf("setting access = %v", s)
+			err = setVlans(vid, s, true)
+			if err != nil {
+				log.Printf("error setting access vlans: %v", err)
+				return agx.TestSetGenError
+			}
+
 		}
 
 		return agx.TestSetNoError
@@ -223,13 +253,15 @@ func parseOid(oid string) (int, int, error) {
 	entry_type, err := strconv.Atoi(suffix[0])
 	if err != nil {
 		return -1, -1, fmt.Errorf(
-			"[q_static] bad oid::%s type [%s : %s] %v", oid, oid[len(qvs):], suffix[0], err)
+			"[q_static] bad oid::%s type [%s : %s] %v",
+			oid, oid[len(qvs):], suffix[0], err)
 	}
 
 	entry_num, err := strconv.Atoi(suffix[1])
 	if err != nil {
 		return -1, -1, fmt.Errorf(
-			"[q_static] bad oid::%s index [%s : %s] %v", oid, oid[len(qvs):], suffix[0], err)
+			"[q_static] bad oid::%s index [%s : %s] %v",
+			oid, oid[len(qvs):], suffix[0], err)
 	}
 
 	return entry_type, entry_num, nil
@@ -286,6 +318,26 @@ func generateVlanTable() VlanTable {
 	return table
 }
 
+func generateSWPTable() []int {
+
+	var result []int
+
+	links, err := netlink.LinkList()
+	if err != nil {
+		log.Printf("fail to get list of physical links")
+		return nil
+	}
+
+	for _, l := range links {
+		if strings.HasPrefix(l.Attrs().Name, "swp") {
+			result = append(result, l.Attrs().Index)
+		}
+	}
+
+	return result
+
+}
+
 //Generates the 'Vlan Static' Table
 func generateQVSTable() QVSTable {
 	table := make(map[string]*agx.VarBind)
@@ -317,12 +369,14 @@ func generateQVSTable() QVSTable {
 			ok := false
 			entry, ok = table[egress_tag]
 			if !ok {
-				entry = agx.OctetStringVarBind(*egress_oid, make([]byte, vtable_length))
+				entry =
+					agx.OctetStringVarBind(*egress_oid, make([]byte, vtable_length))
 				table[egress_tag] = entry
 			}
 			entry, ok = table[access_tag]
 			if !ok {
-				entry = agx.OctetStringVarBind(*access_oid, make([]byte, vtable_length))
+				entry =
+					agx.OctetStringVarBind(*access_oid, make([]byte, vtable_length))
 				table[access_tag] = entry
 			}
 
@@ -348,6 +402,34 @@ func generateQVSTable() QVSTable {
 		log.Printf("==>%s = %v", e.Name.String(), e)
 	}
 	return ordered_table
+}
+
+func setVlans(vid int, table agx.OctetString, access bool) error {
+	bridge_flags := uint(0)
+	vinfo_flags := uint(0)
+	if access {
+		vinfo_flags |= netlink.BRIDGE_VLAN_INFO_UNTAGGED
+	}
+
+	for i := 0; i < len(swptable); i++ {
+		if IsPortSet(i, table.Octets) {
+			log.Printf("vlan-add i=%d access=%v", swptable[i], access)
+			err := netlink.BridgeVlanAdd(
+				uint(vid), swptable[i], bridge_flags, vinfo_flags)
+			if err != nil {
+				return err
+			}
+		} else {
+			log.Printf("vlan-del i=%d access=%v", swptable[i], access)
+			err := netlink.BridgeVlanDel(
+				uint(vid), swptable[i], bridge_flags, vinfo_flags)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
 // IsPortSet returns whether or not the port at index i is set within the

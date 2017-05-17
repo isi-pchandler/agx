@@ -451,7 +451,8 @@ func handleTestSet(c *Connection, h *Header, buf []byte) {
 
 		for _, h := range hbs {
 			if strings.HasPrefix(v.Name.String(), h.Oid) {
-				r.ResponsePayload.Error = int16(h.Handler.(TestSetHandler)(v, int(c.sessionId)))
+				r.ResponsePayload.Error =
+					int16(h.Handler.(TestSetHandler)(v, int(c.sessionId)))
 			}
 		}
 

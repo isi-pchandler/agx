@@ -2,7 +2,7 @@
 An [AgentX](https://tools.ietf.org/html/rfc2741) library for Go
 
 ## Rationale
-There are alreay a few other [AgentX](https://tools.ietf.org/html/rfc2741) libraries for Go out there. However, none of the ones I found seem to support setting variables, and most seem to be built with a relatively static devices in mind. **agx** is purposely designed to support managing highly dynamic devices. Both set and get operations are exposed through functional interfaces that allow your code to be executed when GET or SET operations come through the pipes.
+There are already a few other [AgentX](https://tools.ietf.org/html/rfc2741) libraries for Go out there. However, none of the ones I found seem to support setting variables, and most seem to be built with a relatively static devices in mind. **agx** is purposely designed to support managing highly dynamic devices. Both set and get operations are exposed through functional interfaces that allow your code to be executed when GET or SET operations come through the pipes.
 
 ## Disclaimer 
 I am still pushing toward an initial release and the library is not yet fully functional.

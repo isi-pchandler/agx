@@ -160,6 +160,8 @@ func main() {
 
 	c.OnGetSubtree(qvs, func(oid agx.Subtree, next bool) agx.VarBind {
 
+		qtable = generateQVSTable()
+
 		if len(qtable) == 0 {
 			log.Printf("vlan table is empty")
 			return agx.EndOfMibViewVarBind(oid)

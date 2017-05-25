@@ -392,6 +392,11 @@ func (s Subtree) LessThanEq(x Subtree) bool {
 	return s.String() <= x.String()
 }
 
+func (s Subtree) Eq(x Subtree) bool {
+	//TODO can be more efficient without string conv
+	return s.String() == x.String()
+}
+
 func (s Subtree) WireSize() int {
 	return 4 + len(s.SubIdentifiers)*4
 }

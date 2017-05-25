@@ -393,8 +393,8 @@ func varSearch(oid string, handlers []HandlerBundle, next bool) VarBind {
 	h := handlers[0]
 	h_subtree, _ := NewSubtree(h.Oid)
 	if h.Type == GetSubtreeHandlerType {
-		//truncate the target oid to the prefix length of the handler, if the handler
-		//comes at or after the truncation it should be executed
+		//truncate the target oid to the prefix length of the handler, if the
+		//handler comes at or after the truncation it should be executed
 		if h.Oid >= oid[:len(h.Oid)] {
 			vb := h.Handler.(GetSubtreeHandler)(*subtree, next)
 			//if the subtree does not have the target oid we fall through to continue

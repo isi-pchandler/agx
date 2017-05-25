@@ -20,13 +20,21 @@ import (
 // top level objects
 const (
 	qbridge  = "1.3.6.1.2.1.17"
+	d_base   = qbridge + ".1"
 	q_base   = qbridge + ".7.1.1"
 	q_tp     = qbridge + ".7.1.2"
 	q_static = qbridge + ".7.1.3"
 	q_vlan   = qbridge + ".7.1.4"
 )
 
-// base
+// bridge-base
+const (
+	db_ports      = d_base + ".4"
+	db_numports   = d_base + ".2.0"
+	db_port_index = db_ports + ".1.2"
+)
+
+// qbridge-base
 const (
 	qb_version        = q_base + ".1.0"
 	qb_maxvlanid      = q_base + ".2.0"
@@ -85,6 +93,7 @@ func (t QVSTable) Less(i, j int) bool { return t[i].Name.LessThan(t[j].Name) }
 
 var qtable QVSTable
 var swptable []int
+var bridgeIdx int
 
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  *
@@ -94,7 +103,7 @@ var swptable []int
 
 func main() {
 
-	qvs_subtree, _ := agx.NewSubtree(qvs)
+	qbridge_subtree, _ := agx.NewSubtree(qbridge)
 
 	qtable = generateQVSTable()
 	swptable = generateSWPTable()
@@ -156,9 +165,16 @@ func main() {
 
 	})
 
+	c.OnGet(db_numports, func(oid agx.Subtree) agx.VarBind {
+		bridges, _ := netlink.GetBridgeInfo()
+		bridge_size := len(bridges)
+		log.Printf("[dbridge][get] bridge_size=%d", bridge_size)
+		return agx.IntegerVarBind(oid, int32(bridge_size))
+	})
+
 	//Vlan Table ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-	c.OnGetSubtree(qvs, func(oid agx.Subtree, next bool) agx.VarBind {
+	c.OnGetSubtree(qbridge, func(oid agx.Subtree, next bool) agx.VarBind {
 
 		qtable = generateQVSTable()
 
@@ -167,7 +183,7 @@ func main() {
 			return agx.EndOfMibViewVarBind(oid)
 		}
 
-		if oid.HasPrefix(*qvs_subtree) {
+		if oid.HasPrefix(*qbridge_subtree) {
 			entry := findEntry(oid, next)
 			if entry == nil {
 				return agx.EndOfMibViewVarBind(oid)
@@ -181,6 +197,7 @@ func main() {
 
 	})
 
+	//TODO we are doing the actual setting here, should be in commit-set
 	c.OnTestSet(qvs, func(vb agx.VarBind, sessionId int) agx.TestSetResult {
 
 		log.Printf("[test-set] oid::%s session=%d", vb.Name.String(), sessionId)
@@ -223,6 +240,17 @@ func main() {
 				return agx.TestSetGenError
 			}
 
+		} else if table == qvs_status_suffix {
+
+			log.Printf("[test-set] status vid=%d", vid)
+			bridge_flags := uint(netlink.BRIDGE_FLAGS_SELF)
+			vinfo_flags := uint(0)
+			netlink.BridgeVlanAdd(
+				uint(vid), bridgeIdx, bridge_flags, vinfo_flags)
+
+		} else {
+			log.Print("[test-set] noting to set")
+			return agx.TestSetNoCreation
 		}
 
 		return agx.TestSetNoError
@@ -281,17 +309,31 @@ func findEntry(oid agx.Subtree, next bool) *agx.VarBind {
 	)
 
 	//binary search found nothing
-	if i == -1 {
+	if i == -1 || len(qtable) <= i {
 		log.Printf("findEntry oid=%s next=%v not found", oid.String(), next)
 		return nil
 	}
 	if !next {
-		log.Printf("findEntry returning next=%s", qtable[i].Name.String())
-		return qtable[i]
-	}
-	if i < len(qtable)-1 {
-		log.Printf("findEntry returning next=%s", qtable[i+1].Name.String())
-		return qtable[i+1]
+		if qtable[i].Name.Eq(oid) {
+			log.Printf("findEntry returning !next=%s", qtable[i].Name.String())
+			return qtable[i]
+		} else {
+			return nil
+		}
+	} else {
+
+		if qtable[i].Name.Eq(oid) {
+			if i < len(qtable)-1 {
+				log.Printf("findEntry returning next=%s", qtable[i+1].Name.String())
+				return qtable[i+1]
+			} else {
+				return nil
+			}
+		} else {
+			log.Printf("findEntry returning next=%s", qtable[i].Name.String())
+			return qtable[i]
+		}
+
 	}
 
 	log.Printf("findEntry oid=%s next=%v i=%d not found", oid.String(), next, i)
@@ -347,7 +389,18 @@ func generateQVSTable() QVSTable {
 	bridges, _ := netlink.GetBridgeInfo()
 	vtable_length := int(math.Ceil(float64(len(bridges)) / 8))
 	for bridge_index, bridge := range bridges {
+
+		bindex_tag := fmt.Sprintf("%s.%d", db_port_index, bridge_index+1)
+		bindex_oid, _ := agx.NewSubtree(bindex_tag)
+		table[bindex_tag] = &agx.VarBind{
+			Type: agx.IntegerT,
+			Name: *bindex_oid,
+			Data: int32(bridge.Index),
+		}
+
 		for _, vlan := range bridge.Vlans {
+
+			//bridge_index := bridge.Index
 
 			//generate the name, egress and access oid tags for the current vlan
 			name_tag := fmt.Sprintf("%s.%d", qvs_name, vlan.Vid)
@@ -384,10 +437,10 @@ func generateQVSTable() QVSTable {
 
 			//set the egress and access tables for each vlan
 			if vlan.Untagged {
-				entry, _ = table[egress_tag]
+				entry, _ = table[access_tag]
 				SetPort(bridge_index, entry.Data.(agx.OctetString).Octets[:])
 			} else {
-				entry, _ = table[access_tag]
+				entry, _ = table[egress_tag]
 				SetPort(bridge_index, entry.Data.(agx.OctetString).Octets[:])
 			}
 		}
@@ -410,19 +463,19 @@ func setVlans(vid int, table agx.OctetString, access bool) error {
 	bridge_flags := uint(0)
 	vinfo_flags := uint(0)
 	if access {
-		vinfo_flags |= netlink.BRIDGE_VLAN_INFO_UNTAGGED
+		vinfo_flags |= netlink.BRIDGE_VLAN_INFO_UNTAGGED | netlink.BRIDGE_VLAN_INFO_PVID
 	}
 
 	for i := 0; i < len(swptable); i++ {
 		if IsPortSet(i, table.Octets) {
-			log.Printf("vlan-add i=%d access=%v", swptable[i], access)
+			log.Printf("vlan-del [%d] i=%d access=%v", vid, swptable[i], access)
 			err := netlink.BridgeVlanAdd(
 				uint(vid), swptable[i], bridge_flags, vinfo_flags)
 			if err != nil {
 				return err
 			}
 		} else {
-			log.Printf("vlan-del i=%d access=%v", swptable[i], access)
+			log.Printf("vlan-del [%d] i=%d access=%v", vid, swptable[i], access)
 			err := netlink.BridgeVlanDel(
 				uint(vid), swptable[i], bridge_flags, vinfo_flags)
 			if err != nil {

@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"github.com/rcgoodfellow/agx"
 	"github.com/rcgoodfellow/netlink"
+	"io"
 	"log"
 	"math"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -94,6 +96,7 @@ func (t QVSTable) Less(i, j int) bool { return t[i].Name.LessThan(t[j].Name) }
 var qtable QVSTable
 var swptable []int
 var bridgeIdx int
+var vtable map[int][]uint16
 
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  *
@@ -103,10 +106,24 @@ var bridgeIdx int
 
 func main() {
 
+	logfile, err := os.OpenFile("/var/log/qbridge.log",
+		os.O_RDWR|os.O_CREATE|os.O_APPEND,
+		0666)
+
+	if err != nil {
+		log.Fatalf("failed to open log file: %v", err)
+	}
+	defer logfile.Close()
+
+	mw := io.MultiWriter(os.Stdout, logfile)
+	log.SetOutput(mw)
+
 	qbridge_subtree, _ := agx.NewSubtree(qbridge)
 
 	qtable = generateQVSTable()
 	swptable = generateSWPTable()
+	vtable = make(map[int][]uint16)
+	generateVtable()
 
 	id, descr := "1.2.3.4.7", "qbridge-agent"
 	c, err := agx.Connect(&id, &descr)
@@ -459,28 +476,79 @@ func generateQVSTable() QVSTable {
 	return ordered_table
 }
 
+func generateVtable() {
+	bridges, _ := netlink.GetBridgeInfo()
+
+	//initialize vlan property maps
+	for _, bridge := range bridges {
+		for _, vlan_info := range bridge.Vlans {
+			vtable[int(vlan_info.Vid)] = make([]uint16, len(bridges))
+		}
+	}
+
+	for bridge_index, bridge := range bridges {
+		for _, vlan_info := range bridge.Vlans {
+			if vlan_info.Untagged {
+				vtable[int(vlan_info.Vid)][bridge_index] |=
+					netlink.BRIDGE_VLAN_INFO_UNTAGGED | netlink.BRIDGE_VLAN_INFO_PVID
+			}
+		}
+	}
+}
+
 func setVlans(vid int, table agx.OctetString, access bool) error {
 	bridge_flags := uint(0)
-	vinfo_flags := uint(0)
+	vinfo_flags := uint16(0)
 	if access {
-		vinfo_flags |= netlink.BRIDGE_VLAN_INFO_UNTAGGED | netlink.BRIDGE_VLAN_INFO_PVID
+		vinfo_flags |=
+			netlink.BRIDGE_VLAN_INFO_UNTAGGED | netlink.BRIDGE_VLAN_INFO_PVID
+	} else {
+		vinfo_flags |=
+			netlink.BRIDGE_VLAN_INFO_EGRESS
+	}
+
+	_, ok := vtable[vid]
+	if !ok {
+		vtable[vid] = make([]uint16, len(swptable))
 	}
 
 	for i := 0; i < len(swptable); i++ {
 		if IsPortSet(i, table.Octets) {
-			log.Printf("vlan-del [%d] i=%d access=%v", vid, swptable[i], access)
-			err := netlink.BridgeVlanAdd(
-				uint(vid), swptable[i], bridge_flags, vinfo_flags)
-			if err != nil {
-				return err
-			}
+			log.Printf("vlan-set [%d] i=%d vid=%d access=%v", i, vid, swptable[i], access)
+			vtable[vid][i] |= vinfo_flags
+
+			/*
+				err := netlink.BridgeVlanAdd(
+					uint(vid), swptable[i], bridge_flags, uint(vinfo_flags))
+				if err != nil {
+					return err
+				}
+			*/
 		} else {
 			log.Printf("vlan-del [%d] i=%d access=%v", vid, swptable[i], access)
-			err := netlink.BridgeVlanDel(
-				uint(vid), swptable[i], bridge_flags, vinfo_flags)
-			if err != nil {
-				return err
-			}
+			vtable[vid][i] &= ^vinfo_flags
+
+			/*
+				err := netlink.BridgeVlanDel(
+					uint(vid), swptable[i], bridge_flags, uint(vinfo_flags))
+				if err != nil {
+					return err
+				}
+			*/
+		}
+
+		//if the flags are non-zero then we just need to update the flags,
+		//otherwise the entry is gonners
+		var err error
+		if vtable[vid][i] != 0 {
+			err = netlink.BridgeVlanAdd(
+				uint(vid), swptable[i], bridge_flags, uint(vinfo_flags))
+		} else {
+			err = netlink.BridgeVlanDel(
+				uint(vid), swptable[i], bridge_flags, uint(vinfo_flags))
+		}
+		if err != nil {
+			return err
 		}
 	}
 
@@ -517,5 +585,22 @@ func UnsetPort(i int, ports []byte) {
 	bits := &ports[i/8]
 	bit := 7 - (i % 8)
 	*bits &= ^(1 << uint(bit))
+
+}
+
+func MergePortmaps(a, b []byte) []byte {
+
+	var c []byte
+	if len(a) > len(b) {
+		c = make([]byte, len(a))
+	} else {
+		c = make([]byte, len(b))
+	}
+
+	for i, _ := range c {
+		c[i] = a[i] | b[i]
+	}
+
+	return c
 
 }

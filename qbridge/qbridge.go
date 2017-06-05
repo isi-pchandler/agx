@@ -327,12 +327,12 @@ func findEntry(oid agx.Subtree, next bool) *agx.VarBind {
 
 	//binary search found nothing
 	if i == -1 || len(qtable) <= i {
-		log.Printf("findEntry oid=%s next=%v not found", oid.String(), next)
+		//log.Printf("findEntry oid=%s next=%v not found", oid.String(), next)
 		return nil
 	}
 	if !next {
 		if qtable[i].Name.Eq(oid) {
-			log.Printf("findEntry returning !next=%s", qtable[i].Name.String())
+			//log.Printf("findEntry returning !next=%s", qtable[i].Name.String())
 			return qtable[i]
 		} else {
 			return nil
@@ -341,19 +341,19 @@ func findEntry(oid agx.Subtree, next bool) *agx.VarBind {
 
 		if qtable[i].Name.Eq(oid) {
 			if i < len(qtable)-1 {
-				log.Printf("findEntry returning next=%s", qtable[i+1].Name.String())
+				//log.Printf("findEntry returning next=%s", qtable[i+1].Name.String())
 				return qtable[i+1]
 			} else {
 				return nil
 			}
 		} else {
-			log.Printf("findEntry returning next=%s", qtable[i].Name.String())
+			//log.Printf("findEntry returning next=%s", qtable[i].Name.String())
 			return qtable[i]
 		}
 
 	}
 
-	log.Printf("findEntry oid=%s next=%v i=%d not found", oid.String(), next, i)
+	//log.Printf("findEntry oid=%s next=%v i=%d not found", oid.String(), next, i)
 	return nil
 }
 
@@ -470,9 +470,11 @@ func generateQVSTable() QVSTable {
 	}
 	sort.Sort(ordered_table)
 
-	for _, e := range ordered_table {
-		log.Printf("==>%s = %v", e.Name.String(), e)
-	}
+	/*
+		for _, e := range ordered_table {
+			log.Printf("==>%s = %v", e.Name.String(), e)
+		}
+	*/
 	return ordered_table
 }
 
@@ -514,27 +516,15 @@ func setVlans(vid int, table agx.OctetString, access bool) error {
 
 	for i := 0; i < len(swptable); i++ {
 		if IsPortSet(i, table.Octets) {
-			log.Printf("vlan-set [%d] i=%d vid=%d access=%v", i, vid, swptable[i], access)
+
+			log.Printf("vlan-set vid=%d ifx=%d access=%v", vid, i, access)
 			vtable[vid][i] |= vinfo_flags
 
-			/*
-				err := netlink.BridgeVlanAdd(
-					uint(vid), swptable[i], bridge_flags, uint(vinfo_flags))
-				if err != nil {
-					return err
-				}
-			*/
 		} else {
-			log.Printf("vlan-del [%d] i=%d access=%v", vid, swptable[i], access)
-			vtable[vid][i] &= ^vinfo_flags
 
-			/*
-				err := netlink.BridgeVlanDel(
-					uint(vid), swptable[i], bridge_flags, uint(vinfo_flags))
-				if err != nil {
-					return err
-				}
-			*/
+			log.Printf("vlan-del vid=%d ifx=%d access=%v", vid, i, access)
+			vtable[vid][i] &^= vinfo_flags
+
 		}
 
 		//if the flags are non-zero then we just need to update the flags,
@@ -542,13 +532,13 @@ func setVlans(vid int, table agx.OctetString, access bool) error {
 		var err error
 		if vtable[vid][i] != 0 {
 			err = netlink.BridgeVlanAdd(
-				uint(vid), swptable[i], bridge_flags, uint(vinfo_flags))
+				uint(vid), swptable[i], bridge_flags, uint(vtable[vid][i]))
 		} else {
 			err = netlink.BridgeVlanDel(
-				uint(vid), swptable[i], bridge_flags, uint(vinfo_flags))
+				uint(vid), swptable[i], bridge_flags, uint(vtable[vid][i]))
 		}
 		if err != nil {
-			return err
+			log.Println(err)
 		}
 	}
 

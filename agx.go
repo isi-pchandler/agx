@@ -319,7 +319,7 @@ func doHandleGet(c *Connection, h *Header, buf []byte, next bool) {
 
 	for _, x := range g.SearchRangeList {
 		vb := c.getNextVarBind(x.String(), next)
-		log.Printf("out: %s", vb.Name.String())
+		//log.Printf("out: %s", vb.Name.String())
 		r.VarBindList = append(r.VarBindList, vb)
 		r.Header.PayloadLength += int32(vb.WireSize())
 	}
@@ -350,7 +350,7 @@ func (hs HandlerBundles) Less(i, j int) bool { return hs[i].Oid < hs[j].Oid }
 //     should be cached somewhere
 func (c *Connection) getNextVarBind(oid string, next bool) VarBind {
 
-	log.Printf("[get-next-vb] oid=%s next=%v", oid, next)
+	//log.Printf("[get-next-vb] oid=%s next=%v", oid, next)
 
 	//make the array to hold the handlers that has a size equal to the sum of
 	//the two handler maps

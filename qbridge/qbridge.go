@@ -183,7 +183,7 @@ func main() {
 	})
 
 	c.OnGet(db_numports, func(oid agx.Subtree) agx.VarBind {
-		bridges, _ := netlink.GetBridgeInfo()
+		bridges, _ := netlink.GetBridgeVlanInfo()
 		bridge_size := len(bridges)
 		log.Printf("[dbridge][get] bridge_size=%d", bridge_size)
 		return agx.IntegerVarBind(oid, int32(bridge_size))
@@ -359,7 +359,8 @@ func findEntry(oid agx.Subtree, next bool) *agx.VarBind {
 
 //Genertes a table keyed by vlan number
 func generateVlanTable() VlanTable {
-	bridges, _ := netlink.GetBridgeInfo()
+	//bridges, _ := netlink.GetBridgeVlanInfo()
+	bridges, _ := physicalBridgeVlanInfo()
 	table := make(VlanTable)
 	for _, bridge := range bridges {
 		for _, vlan := range bridge.Vlans {
@@ -395,15 +396,45 @@ func generateSWPTable() []int {
 		}
 	}
 
+	log.Printf("SWP: %#v", result)
+
 	return result
 
+}
+
+func physicalBridgeVlanInfo() ([]*netlink.BridgeVlanInfo, error) {
+
+	vinfo, err := netlink.GetBridgeVlanInfo()
+	if err != nil {
+		return nil, err
+	}
+
+	linfo, err := netlink.GetBridgeLinkInfo()
+	if err != nil {
+		return nil, err
+	}
+	linfo_lookup := make(map[int]*netlink.BridgeLinkInfo)
+	for _, x := range linfo {
+		linfo_lookup[int(x.Index)] = x
+	}
+
+	var result []*netlink.BridgeVlanInfo
+	for _, v := range vinfo {
+		_, ok := linfo_lookup[int(v.Index)]
+		if ok {
+			result = append(result, v)
+		}
+	}
+	return result, nil
 }
 
 //Generates the 'Vlan Static' Table
 func generateQVSTable() QVSTable {
 	table := make(map[string]*agx.VarBind)
 
-	bridges, _ := netlink.GetBridgeInfo()
+	//bridges, _ := netlink.GetBridgeVlanInfo()
+	bridges, _ := physicalBridgeVlanInfo()
+
 	vtable_length := int(math.Ceil(float64(len(bridges)) / 8))
 	for bridge_index, bridge := range bridges {
 
@@ -428,6 +459,8 @@ func generateQVSTable() QVSTable {
 
 			access_tag := fmt.Sprintf("%s.%d", qvs_untagged, vlan.Vid)
 			access_oid, _ := agx.NewSubtree(access_tag)
+
+			//log.Printf("VLAN vid=%d bid=%d", vlan.Vid, bridge_index+1)
 
 			//each vlan gets a name
 			entry := &agx.VarBind{
@@ -479,7 +512,7 @@ func generateQVSTable() QVSTable {
 }
 
 func generateVtable() {
-	bridges, _ := netlink.GetBridgeInfo()
+	bridges, _ := netlink.GetBridgeVlanInfo()
 
 	//initialize vlan property maps
 	for _, bridge := range bridges {
@@ -531,6 +564,8 @@ func setVlans(vid int, table agx.OctetString, access bool) error {
 		//otherwise the entry is gonners
 		var err error
 		if vtable[vid][i] != 0 {
+			//TODO check if the interface is up otherwise this will log a
+			//'not supported' which is harmelss, but annoying in logs
 			err = netlink.BridgeVlanAdd(
 				uint(vid), swptable[i], bridge_flags, uint(vtable[vid][i]))
 		} else {

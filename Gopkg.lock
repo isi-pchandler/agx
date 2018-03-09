@@ -5,13 +5,12 @@
   branch = "master"
   name = "github.com/rcgoodfellow/netlink"
   packages = ["."]
-  revision = "0176be83504781894a47326b38665371e8e78755"
+  revision = "c1b84fa836011a84f6d5d6bfa7d6e6b5804e1c4c"
 
 [[projects]]
-  branch = "master"
   name = "github.com/vishvananda/netlink"
   packages = ["nl"]
-  revision = "5236321576c0c97ab02c078e60f9b1c5c1828807"
+  revision = "1882fa99fc5adc217f354c6f37a172876877f77d"
 
 [[projects]]
   branch = "master"
